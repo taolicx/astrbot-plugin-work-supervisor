@@ -297,6 +297,8 @@ async def run_smoke_test() -> list[str]:
         assert no_task and "没有" in no_task[0]
         passed.append("self_status_after_complete")
 
+        settings_start_at = plugin._now() - plugin_main.timedelta(minutes=45)
+        settings_deadline_at = settings_start_at + plugin_main.timedelta(hours=2)
         plugin.config["settings_tasks"] = [
             {
                 "__template_key": "supervision_task",
@@ -307,7 +309,9 @@ async def run_smoke_test() -> list[str]:
                 "target_user_name": "ConfigUser",
                 "task_title": "设置页任务",
                 "todo_items": "拆需求\n写代码",
+                "start_at": plugin._format_time(settings_start_at),
                 "duration": "2h",
+                "deadline_at": plugin._format_time(settings_deadline_at),
                 "cooldown": "30m",
                 "todo_pick_count": 2,
             }
@@ -323,9 +327,11 @@ async def run_smoke_test() -> list[str]:
         )
         config_status = await collect_results(plugin.status_supervision(config_event))
         assert config_status and "设置页任务" in config_status[0]
+        assert plugin._format_time(settings_start_at) in config_status[0]
         assert any(
             item.get("task_title") == "设置页任务"
             and item.get("session_id") == "aiocqhttp:FriendMessage:u300"
+            and item.get("start_at") == plugin._format_time(settings_start_at)
             and item.get("task_key")
             for item in plugin.config.get("settings_tasks", [])
         )
@@ -338,6 +344,42 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("settings_task_complete_sync")
+
+        future_start_at = plugin._now() + plugin_main.timedelta(minutes=20)
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u301",
+                "target_user_name": "FutureUser",
+                "task_title": "未来开始任务",
+                "todo_items": "先别催",
+                "start_at": plugin._format_time(future_start_at),
+                "duration": "1h",
+                "cooldown": "10m",
+                "todo_pick_count": 1,
+            }
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        future_event = FakeEvent(
+            sender_id="u301",
+            sender_name="FutureUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u301",
+            message_str="我先路过一下",
+            messages=[Plain("我先路过一下")],
+            private=True,
+        )
+        await plugin.on_message(future_event)
+        assert future_event.call_llm is True
+        assert future_event.stopped is False
+        assert len(future_event.sent_messages) == 0
+        future_status = await collect_results(plugin.status_supervision(future_event))
+        assert future_status and "距离开始" in future_status[0]
+        plugin.config["settings_tasks"] = []
+        await plugin._sync_settings_tasks_from_config(force=True)
+        passed.append("future_start_waits")
 
         plain_supervision_phrase_event = FakeEvent(
             sender_id="u102",

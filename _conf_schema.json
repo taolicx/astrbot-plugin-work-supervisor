@@ -147,16 +147,22 @@
             "hint": "可选。每行一条，也可以用顿号或逗号分隔。",
             "default": ""
           },
+          "start_at": {
+            "description": "开始时间",
+            "type": "string",
+            "hint": "例：2026-04-16 20:00。留空就从现在开始。",
+            "default": ""
+          },
           "duration": {
             "description": "任务时长",
             "type": "string",
-            "hint": "例：30m、2h、1d。填了截止时间就不用填这个。",
+            "hint": "例：30m、2h、1d。没填截止时间时，按开始时间加这个时长计算。",
             "default": "3h"
           },
           "deadline_at": {
             "description": "截止时间",
             "type": "string",
-            "hint": "例：2026-04-16 22:00。留空就按任务时长计算。",
+            "hint": "例：2026-04-16 22:00。留空就按开始时间加任务时长计算。",
             "default": ""
           },
           "cooldown": {

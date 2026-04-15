@@ -46,7 +46,7 @@ SKIP_COMMAND_PREFIXES = (
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.1",
+    "0.1.2",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -318,6 +318,19 @@ class WorkSupervisorPlugin(Star):
         if minutes > 0:
             return f"剩余时间大约 {minutes} 分钟。"
         return "剩余时间不到 1 分钟。"
+
+    def _format_until_start(self, start_at: datetime, now: datetime) -> str:
+        if start_at <= now:
+            return "已经到开始时间了。"
+        delta = start_at - now
+        total_seconds = int(delta.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        if hours > 0:
+            return f"距离开始大约还有 {hours} 小时 {minutes} 分钟。"
+        if minutes > 0:
+            return f"距离开始大约还有 {minutes} 分钟。"
+        return "距离开始不到 1 分钟。"
 
     def _format_duration_seconds(self, seconds: int) -> str:
         seconds = max(int(seconds), 0)
@@ -884,8 +897,15 @@ class WorkSupervisorPlugin(Star):
         except (TypeError, ValueError):
             todo_pick_count = self._default_todo_pick_count()
         todo_items = self._parse_todo_items(item.get("todo_items", ""))
+        start_at = self._parse_settings_datetime(item.get("start_at")) or now
         deadline_at = self._parse_settings_datetime(item.get("deadline_at"))
-        end_at = deadline_at or (now + timedelta(seconds=duration_seconds))
+        end_at = deadline_at or (start_at + timedelta(seconds=duration_seconds))
+        if end_at <= start_at:
+            logger.warning(
+                "WorkSupervisor settings task ignored: deadline_at must be later than start_at."
+            )
+            return None
+        duration_seconds = max(int((end_at - start_at).total_seconds()), 60)
 
         parsed = {
             "target_user_id": target_user_id,
@@ -896,7 +916,8 @@ class WorkSupervisorPlugin(Star):
             "created_by_user_name": str(item.get("created_by_user_name") or "机器人").strip() or "机器人",
             "task_title": task_title,
             "todo_items": todo_items,
-            "duration_seconds": max(duration_seconds, 60),
+            "start_at": start_at,
+            "duration_seconds": duration_seconds,
             "cooldown_seconds": max(cooldown_seconds, 0),
             "todo_pick_count": min(max(todo_pick_count, 1), max(len(todo_items), 1), 5),
             "end_at": end_at,
@@ -915,6 +936,7 @@ class WorkSupervisorPlugin(Star):
             "created_by_user_name": parsed["created_by_user_name"],
             "task_title": task_title,
             "todo_items": "\n".join(todo_items),
+            "start_at": self._format_time(start_at),
             "duration": self._format_compact_duration_seconds(parsed["duration_seconds"]),
             "deadline_at": self._format_time(end_at),
             "cooldown": self._format_compact_duration_seconds(parsed["cooldown_seconds"]),
@@ -968,6 +990,7 @@ class WorkSupervisorPlugin(Star):
             "created_by_user_name": str(task.get("created_by_user_name") or ""),
             "task_title": str(task.get("task_title") or ""),
             "todo_items": "\n".join(todo_items),
+            "start_at": self._format_time(start_at),
             "duration": self._format_compact_duration_seconds(duration_seconds),
             "deadline_at": self._format_time(end_at),
             "cooldown": self._format_compact_duration_seconds(int(task.get("cooldown_seconds") or 0)),
@@ -1024,6 +1047,7 @@ class WorkSupervisorPlugin(Star):
                         created_by_user_name=parsed["created_by_user_name"],
                         task_title=parsed["task_title"],
                         todo_items=parsed["todo_items"],
+                        start_at=parsed["start_at"],
                         end_at=parsed["end_at"],
                         cooldown_seconds=parsed["cooldown_seconds"],
                         todo_pick_count=parsed["todo_pick_count"],
@@ -1050,6 +1074,7 @@ class WorkSupervisorPlugin(Star):
                             created_by_user_name=parsed["created_by_user_name"],
                             task_title=parsed["task_title"],
                             todo_items=parsed["todo_items"],
+                            start_at=parsed["start_at"],
                             end_at=parsed["end_at"],
                             cooldown_seconds=parsed["cooldown_seconds"],
                             todo_pick_count=parsed["todo_pick_count"],
@@ -1071,6 +1096,7 @@ class WorkSupervisorPlugin(Star):
                     cooldown_seconds=parsed["cooldown_seconds"],
                     todo_pick_count=parsed["todo_pick_count"],
                     now=now,
+                    start_at=parsed["start_at"],
                     end_at=parsed["end_at"],
                     settings_task_key=task_key,
                 )
@@ -1184,11 +1210,12 @@ class WorkSupervisorPlugin(Star):
         cooldown_seconds: int,
         todo_pick_count: int,
         now: datetime,
+        start_at: datetime | None = None,
         end_at: datetime | None = None,
         settings_task_key: str = "",
     ) -> int:
-        start_at = now
-        end_at = end_at or (now + timedelta(seconds=duration_seconds))
+        start_at = start_at or now
+        end_at = end_at or (start_at + timedelta(seconds=duration_seconds))
         cursor = conn.execute(
             """
             INSERT INTO supervision_tasks (
@@ -1233,6 +1260,7 @@ class WorkSupervisorPlugin(Star):
         created_by_user_name: str,
         task_title: str,
         todo_items: list[str],
+        start_at: datetime,
         end_at: datetime,
         cooldown_seconds: int,
         todo_pick_count: int,
@@ -1243,7 +1271,7 @@ class WorkSupervisorPlugin(Star):
             UPDATE supervision_tasks
             SET target_user_id = ?, target_user_name = ?, trigger_session_id = ?,
                 trigger_group_id = ?, created_by_user_id = ?, created_by_user_name = ?,
-                task_title = ?, todo_items_json = ?, end_at = ?, cooldown_seconds = ?,
+                task_title = ?, todo_items_json = ?, start_at = ?, end_at = ?, cooldown_seconds = ?,
                 todo_pick_count = ?, updated_at = ?
             WHERE id = ? AND status = 'active'
             """,
@@ -1256,6 +1284,7 @@ class WorkSupervisorPlugin(Star):
                 created_by_user_name,
                 task_title,
                 json.dumps(todo_items, ensure_ascii=False),
+                self._iso(start_at),
                 self._iso(end_at),
                 cooldown_seconds,
                 todo_pick_count,
@@ -1681,6 +1710,9 @@ class WorkSupervisorPlugin(Star):
         return random.sample(items, pick_count)
 
     def _reminder_due(self, task: dict[str, Any], now: datetime) -> bool:
+        start_at = self._parse_dt(task.get("start_at"))
+        if start_at and start_at > now:
+            return False
         end_at = self._parse_dt(task.get("end_at"))
         if end_at and end_at <= now:
             return False
@@ -1708,7 +1740,9 @@ class WorkSupervisorPlugin(Star):
             f"冷却时间：{self._format_duration_seconds(int(task.get('cooldown_seconds') or 0))}",
             f"上次提醒：{self._format_time(last_reminded_at)}",
         ]
-        if end_at and str(task.get("status")) == "active":
+        if start_at and start_at > now and str(task.get("status")) == "active":
+            lines.append(self._format_until_start(start_at, now))
+        elif end_at and str(task.get("status")) == "active":
             lines.append(self._format_remaining(end_at, now))
         if todo_items:
             lines.append("待办：")
