@@ -285,6 +285,21 @@ async def run_smoke_test() -> list[str]:
         assert self_status and "写第一章" in self_status[0] and "active" in self_status[0]
         passed.append("self_status")
 
+        self_cross_session_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:GroupMessage:g200",
+            message_str="cross session ping",
+            messages=[Plain("cross session ping")],
+            group_id="g200",
+            private=False,
+        )
+        await plugin.on_message(self_cross_session_event)
+        assert len(self_cross_session_event.sent_messages) == 1
+        assert self_cross_session_event.call_llm is False
+        assert self_cross_session_event.stopped is True
+        passed.append("private_task_cross_session_reminder")
+
         self_done = await collect_results(plugin.complete_supervision(self_event))
         assert self_done and "写第一章" in self_done[0]
         assert not any(
@@ -349,6 +364,38 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("settings_task_complete_sync")
+
+        legacy_start_at = plugin._now() - plugin_main.timedelta(minutes=30)
+        legacy_deadline_at = legacy_start_at + plugin_main.timedelta(hours=1)
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u304",
+                "target_user_name": "LegacyUser",
+                "task_title": "legacy-task",
+                "todo_items": "legacy-todo",
+                "start_at": plugin._format_time(legacy_start_at),
+                "duration": "1h",
+                "deadline_at": plugin._format_time(legacy_deadline_at),
+                "cooldown": "15m",
+                "todo_pick_count": 1,
+            }
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        assert any(
+            item.get("task_title") == "legacy-task"
+            and item.get("end_at") == plugin._format_time(legacy_deadline_at)
+            and item.get("reminder_interval") == "15m"
+            and "deadline_at" not in item
+            and "cooldown" not in item
+            for item in plugin.config.get("settings_tasks", [])
+        )
+        plugin.config["settings_tasks"] = []
+        await plugin._sync_settings_tasks_from_config(force=True)
+        passed.append("legacy_settings_normalized")
 
         future_start_at = plugin._now() + plugin_main.timedelta(minutes=20)
         plugin.config["settings_tasks"] = [
@@ -569,6 +616,18 @@ async def run_smoke_test() -> list[str]:
         )
         assert admin_create and "Bob" in admin_create[0] and "做海报" in admin_create[0]
         passed.append("group_mention_admin_start")
+
+        group_task_private_message = FakeEvent(
+            sender_id="u200",
+            sender_name="Bob",
+            unified_msg_origin="aiocqhttp:FriendMessage:u200",
+            message_str="private chat ping",
+            messages=[Plain("private chat ping")],
+            private=True,
+        )
+        await plugin.on_message(group_task_private_message)
+        assert len(group_task_private_message.sent_messages) == 0
+        passed.append("group_task_stays_in_group")
 
         target_message = FakeEvent(
             sender_id="u200",

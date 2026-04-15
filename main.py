@@ -46,7 +46,7 @@ SKIP_COMMAND_PREFIXES = (
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.3",
+    "0.1.4",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -1277,6 +1277,52 @@ class WorkSupervisorPlugin(Star):
         ).fetchone()
         return dict(row) if row else None
 
+    def _task_matches_event_scope(
+        self,
+        task: dict[str, Any],
+        *,
+        session_id: str,
+        group_id: str,
+    ) -> bool:
+        task_session_id = str(task.get("trigger_session_id") or "").strip()
+        if task_session_id and task_session_id == session_id:
+            return True
+
+        task_group_id = str(task.get("trigger_group_id") or "").strip()
+        if task_group_id:
+            return bool(group_id) and task_group_id == group_id
+
+        # Private/self supervision should follow the target user across chats.
+        # Group supervision stays pinned to the originating group.
+        return True
+
+    def _find_active_task_for_event(
+        self,
+        conn: sqlite3.Connection,
+        target_user_id: str,
+        *,
+        session_id: str,
+        group_id: str,
+    ) -> dict[str, Any] | None:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM supervision_tasks
+            WHERE target_user_id = ? AND status = 'active'
+            ORDER BY id DESC
+            """,
+            (target_user_id,),
+        ).fetchall()
+        for row in rows:
+            task = dict(row)
+            if self._task_matches_event_scope(
+                task,
+                session_id=session_id,
+                group_id=group_id,
+            ):
+                return task
+        return None
+
     def _find_task_by_id(
         self,
         conn: sqlite3.Connection,
@@ -2059,13 +2105,19 @@ class WorkSupervisorPlugin(Star):
 
         sender_id = str(event.get_sender_id() or "").strip()
         session_id = str(event.unified_msg_origin or "").strip()
+        group_id = str(event.get_group_id() or "").strip()
         if not sender_id or not session_id:
             return
 
         now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
-                task = self._find_active_task_for_session(conn, sender_id, session_id)
+                task = self._find_active_task_for_event(
+                    conn,
+                    sender_id,
+                    session_id=session_id,
+                    group_id=group_id,
+                )
                 if task and not self._reminder_due(conn, task, now):
                     task = None
 
