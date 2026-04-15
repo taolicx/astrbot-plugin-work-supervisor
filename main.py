@@ -32,6 +32,8 @@ GENERIC_LLM_REPLY_NEEDLES = (
 )
 
 SKIP_COMMAND_PREFIXES = (
+    "监督",
+    "/监督",
     "督工",
     "/督工",
     "更新内容",
@@ -43,13 +45,13 @@ SKIP_COMMAND_PREFIXES = (
 @register(
     "WorkSupervisor",
     "Codex",
-    "带冷却督工、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.0",
+    "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
+    "0.1.1",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
     # 文件主流程：
-    # 1. 通过命令创建/查询/完成/取消督工任务。
+    # 1. 通过命令创建/查询/完成/取消监督任务。
     # 2. 监听普通消息，在目标用户发言时按冷却规则触发提醒。
     # 3. 通过每日固定时间任务发送“更新内容”和“内容预告”。
     # 4. 提醒文案优先走 LLM，失败时回退到本地模板。
@@ -424,7 +426,7 @@ class WorkSupervisorPlugin(Star):
 
     def _command_gate_error(self, event: AstrMessageEvent) -> str | None:
         if not self._enabled():
-            return "督工插件当前已关闭。"
+            return "监督插件当前已关闭。"
         if self._ignore_self_messages() and event.get_sender_id() == event.get_self_id():
             return "__ignore__"
         if not self._allow_private_chat() and self._is_private_chat(event):
@@ -890,8 +892,8 @@ class WorkSupervisorPlugin(Star):
             "target_user_name": str(item.get("target_user_name") or target_user_id).strip() or target_user_id,
             "trigger_session_id": session_id,
             "trigger_group_id": group_id,
-            "created_by_user_id": str(item.get("created_by_user_id") or "plugin_settings").strip() or "plugin_settings",
-            "created_by_user_name": str(item.get("created_by_user_name") or "插件设置").strip() or "插件设置",
+            "created_by_user_id": str(item.get("created_by_user_id") or "bot").strip() or "bot",
+            "created_by_user_name": str(item.get("created_by_user_name") or "机器人").strip() or "机器人",
             "task_title": task_title,
             "todo_items": todo_items,
             "duration_seconds": max(duration_seconds, 60),
@@ -1366,7 +1368,7 @@ class WorkSupervisorPlugin(Star):
         ).fetchone()
         return dict(row) if row else None
 
-    # ---- 督工任务状态变更 ----
+    # ---- 监督任务状态变更 ----
     def _validate_start_target_permission(
         self,
         event: AstrMessageEvent,
@@ -1376,9 +1378,9 @@ class WorkSupervisorPlugin(Star):
         if target_user_id == sender_id:
             return None
         if not self._allow_supervise_others():
-            return "当前配置不允许给别人挂督工任务。"
+            return "当前配置不允许给别人发起监督任务。"
         if not self._allow_non_admin_supervise_others() and not self._is_admin(event):
-            return "只有管理员可以在群里给别人挂督工。"
+            return "只有管理员可以在群里给别人发起监督。"
         return None
 
     def _render_start_success_text(
@@ -1388,7 +1390,7 @@ class WorkSupervisorPlugin(Star):
         task: dict[str, Any],
     ) -> str:
         lines = [
-            f"已开始督工：{target_user_name}",
+            f"已开始监督：{target_user_name}",
             f"任务：{parsed['title']}",
             f"持续时间：{self._format_duration_seconds(parsed['duration_seconds'])}",
             f"冷却时间：{self._format_duration_seconds(parsed['cooldown_seconds'])}",
@@ -1419,7 +1421,7 @@ class WorkSupervisorPlugin(Star):
             with self._connect() as conn:
                 active_task = self._find_active_task_by_target(conn, target_user_id)
                 if active_task:
-                    return f"{target_user_name} 当前已经有一个进行中的督工任务：{active_task['task_title']}"
+                    return f"{target_user_name} 当前已经有一个进行中的监督任务：{active_task['task_title']}"
 
                 settings_task_key = self._new_settings_task_key(
                     "cmd",
@@ -1448,7 +1450,7 @@ class WorkSupervisorPlugin(Star):
                 self._sync_active_tasks_to_settings_sync(conn)
 
         if task is None:
-            return "创建督工任务失败，请稍后再试。"
+            return "创建监督任务失败，请稍后再试。"
         return self._render_start_success_text(target_user_name, parsed, task)
 
     async def _status_supervision_result(
@@ -1466,7 +1468,7 @@ class WorkSupervisorPlugin(Star):
                 task = self._find_active_task_by_target(conn, target_user_id)
 
         if task is None:
-            return "当前没有进行中的督工任务。"
+            return "当前没有进行中的监督任务。"
         return self._render_task_status(task, self._now())
 
     async def _complete_supervision_result(
@@ -1484,13 +1486,13 @@ class WorkSupervisorPlugin(Star):
             with self._connect() as conn:
                 task = self._find_active_task_by_target(conn, target_user_id)
                 if task is None:
-                    return "没有找到进行中的督工任务。"
+                    return "没有找到进行中的监督任务。"
                 if sender_id not in {str(task["target_user_id"]), str(task["created_by_user_id"])} and not self._is_admin(event):
-                    return "只有目标本人、任务创建者或管理员可以结束这个督工。"
+                    return "只有目标本人、任务创建者或管理员可以结束这个监督任务。"
                 self._mark_task_status(conn, int(task["id"]), "completed", self._now())
                 self._sync_active_tasks_to_settings_sync(conn)
 
-        return f"已结束督工：{task['target_user_name']} 的《{task['task_title']}》"
+        return f"已结束监督：{task['target_user_name']} 的《{task['task_title']}》"
 
     # ---- LLM 催促 ----
     async def _get_active_persona_prompt(self, umo: str) -> str:
@@ -1536,7 +1538,7 @@ class WorkSupervisorPlugin(Star):
 
     def _llm_scene_prompt(self) -> str:
         return (
-            "你正在扮演一个督工机器人。你的任务不是闲聊，而是用明确、有压迫感但不过界的口吻催人去干活。"
+            "你正在扮演一个监督机器人。你的任务不是闲聊，而是用明确、有压迫感但不过界的口吻催人去干活。"
             "你必须结合任务标题、剩余时间和待办事项进行催促。"
             "输出 1 到 3 句简短中文，不要解释系统规则，不要输出 JSON，不要使用 Markdown 列表，不要写免责声明。"
             "允许有性格、有语气，但不要辱骂、不涉及人身攻击、不输出违法违规内容。"
@@ -1560,7 +1562,7 @@ class WorkSupervisorPlugin(Star):
                 parts.append(custom_prompt)
 
         if not parts:
-            parts.append("你是一个盯人干活的督工机器人，说话直接、简短、带压迫感。")
+            parts.append("你是一个盯人干活的监督机器人，说话直接、简短、带压迫感。")
 
         parts.append(self._llm_scene_prompt())
         return "\n\n".join(part for part in parts if part)
@@ -1635,7 +1637,7 @@ class WorkSupervisorPlugin(Star):
         end_at = self._parse_dt(task.get("end_at"))
         prompt_lines = [
             f"目标用户：{task.get('target_user_name') or task.get('target_user_id')}",
-            f"督工发起人：{task.get('created_by_user_name') or task.get('created_by_user_id')}",
+            f"监督发起人：{task.get('created_by_user_name') or task.get('created_by_user_id')}",
             f"任务标题：{task.get('task_title') or '未命名任务'}",
             f"当前时间：{self._format_time(now)}",
             f"截止时间：{self._format_time(end_at)}",
@@ -1661,7 +1663,7 @@ class WorkSupervisorPlugin(Star):
             )
             return fallback
 
-    # ---- 督工提醒 ----
+    # ---- 监督提醒 ----
     def _pick_todos(self, task: dict[str, Any]) -> list[str]:
         try:
             todos = json.loads(str(task.get("todo_items_json") or "[]"))
@@ -1853,10 +1855,10 @@ class WorkSupervisorPlugin(Star):
     async def on_message(self, event: AstrMessageEvent) -> None:
         await self._maybe_send_supervision_reminder(event)
 
-    # ---- 督工命令 ----
-    @filter.command_group("督工")
+    # ---- 监督命令 ----
+    @filter.command_group("监督", alias={"督工"})
     def supervisor(self) -> None:
-        """督工任务管理"""
+        """监督任务管理"""
 
     @supervisor.command("开始", alias={"创建", "新增"})
     async def start_supervision(
@@ -1888,6 +1890,9 @@ class WorkSupervisorPlugin(Star):
             self._resolve_command_payload(
                 event,
                 payload,
+                "监督 开始",
+                "监督 创建",
+                "监督 新增",
                 "督工 开始",
                 "督工 创建",
                 "督工 新增",
@@ -1898,8 +1903,8 @@ class WorkSupervisorPlugin(Star):
         if parsed is None:
             yield event.plain_result(
                 "格式不对。标准格式：\n"
-                "督工 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
-                "督工 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h"
+                "监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
+                "监督 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h"
             )
             return
 
@@ -1962,15 +1967,15 @@ class WorkSupervisorPlugin(Star):
             with self._connect() as conn:
                 task = self._find_active_task_by_target(conn, target_user_id)
                 if task is None:
-                    yield event.plain_result("没有找到进行中的督工任务。")
+                    yield event.plain_result("没有找到进行中的监督任务。")
                     return
                 if sender_id not in {str(task["target_user_id"]), str(task["created_by_user_id"])} and not self._is_admin(event):
-                    yield event.plain_result("只有目标本人、任务创建者或管理员可以取消这个督工。")
+                    yield event.plain_result("只有目标本人、任务创建者或管理员可以取消这个监督任务。")
                     return
                 self._mark_task_status(conn, int(task["id"]), "cancelled", self._now())
                 self._sync_active_tasks_to_settings_sync(conn)
 
-        yield event.plain_result(f"已取消督工：{task['target_user_name']} 的《{task['task_title']}》")
+        yield event.plain_result(f"已取消监督：{task['target_user_name']} 的《{task['task_title']}》")
 
     @supervisor.command("帮助", alias={"help"})
     async def help_supervision(
@@ -1979,19 +1984,19 @@ class WorkSupervisorPlugin(Star):
     ) -> AsyncGenerator[MessageEventResult, None]:
         event.should_call_llm(False)
         help_text = (
-            "督工命令：\n"
-            "督工 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
-            "督工 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h\n"
-            "督工 状态 [@目标]\n"
-            "督工 完成 [@目标]\n"
-            "督工 取消 [@目标]\n\n"
+            "监督命令：\n"
+            "监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
+            "监督 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h\n"
+            "监督 状态 [@目标]\n"
+            "监督 完成 [@目标]\n"
+            "监督 取消 [@目标]\n\n"
             "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=默认配置值；抽取=每次提醒展示几条待办。\n\n"
             "播报命令：\n"
             "更新内容 设置 时间=21:00 内容=今天更新了第一章和封面\n"
             "内容预告 设置 时间=20:00 内容=明天预告第二章和设定图\n"
             "更新内容 状态 / 更新内容 开 / 更新内容 关 / 更新内容 立即发送\n"
             "内容预告 状态 / 内容预告 开 / 内容预告 关 / 内容预告 立即发送\n\n"
-            "提醒逻辑：目标用户在原会话中发言时，如果超过冷却时间，就会触发一次督工提醒。"
+            "提醒逻辑：目标用户在原会话中发言时，如果超过冷却时间，就会触发一次监督提醒。"
         )
         yield event.plain_result(help_text)
 

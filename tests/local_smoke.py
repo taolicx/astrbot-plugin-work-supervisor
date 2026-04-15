@@ -256,13 +256,16 @@ async def run_smoke_test() -> list[str]:
         plugin._ensure_scheduler_started = no_scheduler  # type: ignore[method-assign]
 
         passed: list[str] = []
+        assert plugin._skip_message_for_commands("监督 状态")
+        assert plugin._skip_message_for_commands("督工 状态")
+        passed.append("command_prefix_aliases")
 
         self_event = FakeEvent(
             sender_id="u100",
             sender_name="Alice",
             unified_msg_origin="aiocqhttp:FriendMessage:u100",
-            message_str="督工 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3",
-            messages=[Plain("督工 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3")],
+            message_str="监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3",
+            messages=[Plain("监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3")],
             private=True,
         )
         create_self = await collect_results(
@@ -314,8 +317,8 @@ async def run_smoke_test() -> list[str]:
             sender_id="u300",
             sender_name="ConfigUser",
             unified_msg_origin="aiocqhttp:FriendMessage:u300",
-            message_str="督工 状态",
-            messages=[Plain("督工 状态")],
+            message_str="监督 状态",
+            messages=[Plain("监督 状态")],
             private=True,
         )
         config_status = await collect_results(plugin.status_supervision(config_event))
@@ -354,9 +357,9 @@ async def run_smoke_test() -> list[str]:
             sender_id="u101",
             sender_name="Eve",
             unified_msg_origin="aiocqhttp:FriendMessage:u101",
-            message_str="督工 开始 任务=写周报 待办=整理数据、写摘要、发群里 时长=2h 冷却=1h",
+            message_str="监督 开始 任务=写周报 待办=整理数据、写摘要、发群里 时长=2h 冷却=1h",
             messages=[
-                Plain("督工 开始 任务=写周报 待办=整理数据、写摘要、发群里 时长=2h 冷却=1h")
+                Plain("监督 开始 任务=写周报 待办=整理数据、写摘要、发群里 时长=2h 冷却=1h")
             ],
             private=True,
         )
@@ -372,8 +375,8 @@ async def run_smoke_test() -> list[str]:
             sender_id="u101",
             sender_name="Eve",
             unified_msg_origin="aiocqhttp:FriendMessage:u101",
-            message_str="督工 完成",
-            messages=[Plain("督工 完成")],
+            message_str="监督 完成",
+            messages=[Plain("监督 完成")],
             private=True,
         )
         done_from_full_text = await collect_results(
@@ -405,8 +408,8 @@ async def run_smoke_test() -> list[str]:
             sender_id="u100",
             sender_name="Alice",
             unified_msg_origin="aiocqhttp:GroupMessage:g100",
-            message_str="督工 开始 @Bob 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2",
-            messages=[Plain("督工 开始 "), At(name="Bob", qq="u200"), Plain(" 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2")],
+            message_str="监督 开始 @Bob 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2",
+            messages=[Plain("监督 开始 "), At(name="Bob", qq="u200"), Plain(" 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2")],
             group_id="g100",
             private=False,
             admin=False,
@@ -424,8 +427,8 @@ async def run_smoke_test() -> list[str]:
             sender_id="u999",
             sender_name="Boss",
             unified_msg_origin="aiocqhttp:GroupMessage:g100",
-            message_str="督工 开始 @Bob 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2",
-            messages=[Plain("督工 开始 "), At(name="Bob", qq="u200"), Plain(" 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2")],
+            message_str="监督 开始 @Bob 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2",
+            messages=[Plain("监督 开始 "), At(name="Bob", qq="u200"), Plain(" 任务=做海报 待办=出图、排版 时长=2h 冷却=2h 抽取=2")],
             group_id="g100",
             private=False,
             admin=True,
@@ -476,8 +479,8 @@ async def run_smoke_test() -> list[str]:
             sender_id="u999",
             sender_name="Boss",
             unified_msg_origin="aiocqhttp:GroupMessage:g100",
-            message_str="督工 完成 @Bob",
-            messages=[At(name="Bob", qq="u200"), Plain(" 督工 完成")],
+            message_str="监督 完成 @Bob",
+            messages=[At(name="Bob", qq="u200"), Plain(" 监督 完成")],
             group_id="g100",
             private=False,
             admin=True,
