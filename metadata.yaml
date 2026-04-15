@@ -2,4 +2,4 @@ name: WorkSupervisor
 author: Codex
 description: 带冷却督工、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件
 version: 0.1.0
-repo: https://github.com/AstrBotDevs/AstrBot
+repo: https://github.com/taolicx/astrbot-plugin-work-supervisor
