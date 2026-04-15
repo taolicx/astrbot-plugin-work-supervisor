@@ -44,19 +44,19 @@
   "default_duration_minutes": {
     "description": "默认监督时长（分钟）",
     "type": "int",
-    "hint": "创建任务没写时长时使用。",
+    "hint": "命令创建任务时，没写持续时间就用这个。",
     "default": 180
   },
   "default_cooldown_minutes": {
-    "description": "默认提醒间隔（分钟）",
+    "description": "默认期间提醒间隔（分钟）",
     "type": "int",
     "hint": "间隔内不会重复提醒同一个任务。",
     "default": 120
   },
   "default_todo_pick_count": {
-    "description": "默认每次提醒几条待办",
+    "description": "默认每次提醒带几条待办",
     "type": "int",
-    "hint": "提醒时从待办里抽取几条展示。",
+    "hint": "机器人每次提醒会顺手带上几条待办。",
     "default": 3
   },
   "max_todo_items_per_task": {
@@ -68,17 +68,17 @@
   "settings_tasks": {
     "description": "设置页监督任务",
     "type": "template_list",
-    "hint": "这里可以新增监督任务；命令创建的任务也会同步到这里。任务完成、取消或过期后会自动移除。",
+    "hint": "这里可以直接加监督任务。开始时间留空=立刻开始；持续时间和结束时间二填一；提醒次数填 0=不限。",
     "default": [],
     "templates": {
       "supervision_task": {
         "name": "监督任务",
-        "hint": "新增一条监督任务。任务ID不填会自动生成。",
+        "hint": "新增一条监督任务。任务ID一般不用填。",
         "items": {
           "task_key": {
             "description": "任务ID",
             "type": "string",
-            "hint": "一般不用填，插件会自动生成。",
+            "hint": "一般不用填，插件会自己生成。",
             "default": ""
           },
           "enabled": {
@@ -90,7 +90,7 @@
           "platform_id": {
             "description": "平台ID",
             "type": "string",
-            "hint": "通常填 napcat。",
+            "hint": "一般填 napcat。",
             "default": "napcat"
           },
           "session_type": {
@@ -102,7 +102,7 @@
           "session_id": {
             "description": "完整会话ID",
             "type": "string",
-            "hint": "可不填。私聊会按目标QQ生成；群聊会按群号生成。",
+            "hint": "不填也行。私聊会按目标QQ生成；群聊会按群号生成。",
             "default": ""
           },
           "group_id": {
@@ -138,44 +138,44 @@
           "task_title": {
             "description": "任务",
             "type": "string",
-            "hint": "必填。要催促完成的任务标题。",
+            "hint": "必填。这里写要监督做什么。",
             "default": ""
           },
           "todo_items": {
             "description": "待办",
             "type": "text",
-            "hint": "可选。每行一条，也可以用顿号或逗号分隔。",
+            "hint": "可选。每行一条，机器人提醒时会挑几条出来说。",
             "default": ""
           },
           "start_at": {
             "description": "开始时间",
             "type": "string",
-            "hint": "例：2026-04-16 20:00。留空就从现在开始。",
+            "hint": "例：2026-04-16 20:00。留空就立刻开始。",
             "default": ""
           },
           "duration": {
-            "description": "任务时长",
+            "description": "持续时间",
             "type": "string",
-            "hint": "例：30m、2h、1d。没填截止时间时，按开始时间加这个时长计算。",
-            "default": "3h"
-          },
-          "deadline_at": {
-            "description": "截止时间",
-            "type": "string",
-            "hint": "例：2026-04-16 22:00。留空就按开始时间加任务时长计算。",
+            "hint": "和结束时间二填一。支持 30m、2h、1d、每天、永久。两个都填时，以结束时间为准。",
             "default": ""
           },
-          "cooldown": {
-            "description": "提醒间隔",
+          "end_at": {
+            "description": "结束时间",
             "type": "string",
-            "hint": "例：10m、2h。间隔内不重复提醒。",
+            "hint": "和持续时间二填一。例：2026-04-16 22:00。",
+            "default": ""
+          },
+          "reminder_interval": {
+            "description": "期间提醒间隔",
+            "type": "string",
+            "hint": "例：10m、2h。目标在进行期间发言时，至少隔这么久才再提醒一次。",
             "default": "2h"
           },
-          "todo_pick_count": {
-            "description": "每次提醒几条待办",
+          "reminder_count": {
+            "description": "提醒次数",
             "type": "int",
-            "hint": "默认 3。待办少于这个数时会全部展示。",
-            "default": 3
+            "hint": "填 0 表示不限制。填 3 表示最多提醒 3 次；持续时间=每天时按每天重新计算。",
+            "default": 0
           }
         }
       }

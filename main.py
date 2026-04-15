@@ -46,7 +46,7 @@ SKIP_COMMAND_PREFIXES = (
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.2",
+    "0.1.3",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -222,7 +222,9 @@ class WorkSupervisorPlugin(Star):
                     status TEXT NOT NULL,
                     start_at TEXT NOT NULL,
                     end_at TEXT NOT NULL,
+                    schedule_kind TEXT NOT NULL DEFAULT 'once',
                     cooldown_seconds INTEGER NOT NULL,
+                    reminder_limit INTEGER NOT NULL DEFAULT 0,
                     todo_pick_count INTEGER NOT NULL,
                     last_reminded_at TEXT DEFAULT '',
                     completed_at TEXT DEFAULT '',
@@ -262,6 +264,8 @@ class WorkSupervisorPlugin(Star):
                 """
             )
             self._ensure_column(conn, "supervision_tasks", "settings_task_key", "TEXT DEFAULT ''")
+            self._ensure_column(conn, "supervision_tasks", "schedule_kind", "TEXT NOT NULL DEFAULT 'once'")
+            self._ensure_column(conn, "supervision_tasks", "reminder_limit", "INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_supervision_tasks_settings_key
@@ -308,7 +312,7 @@ class WorkSupervisorPlugin(Star):
 
     def _format_remaining(self, end_at: datetime, now: datetime) -> str:
         if end_at <= now:
-            return "已经到截止时间了。"
+            return "已经到结束时间了。"
         delta = end_at - now
         total_seconds = int(delta.total_seconds())
         hours, remainder = divmod(total_seconds, 3600)
@@ -353,6 +357,76 @@ class WorkSupervisorPlugin(Star):
         if seconds and seconds % 60 == 0:
             return f"{seconds // 60}m"
         return f"{seconds}s"
+
+    def _normalize_schedule_kind(self, value: Any) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"permanent", "forever", "always", "永久"}:
+            return "permanent"
+        if raw in {"daily", "everyday", "每天", "每日"}:
+            return "daily"
+        return "once"
+
+    def _parse_duration_seconds_or_none(self, text: str) -> int | None:
+        raw = str(text or "").strip()
+        if not raw:
+            return None
+        parsed = self._parse_duration_seconds(raw, -1)
+        return parsed if parsed > 0 else None
+
+    def _parse_settings_duration_spec(self, text: Any) -> tuple[str, int | None, str]:
+        raw = str(text or "").strip()
+        lowered = raw.lower()
+        if not raw:
+            return "once", None, ""
+        if lowered in {"永久", "permanent", "forever", "always"}:
+            return "permanent", None, "永久"
+        if lowered in {"每天", "daily", "everyday"}:
+            return "daily", 86400, "每天"
+        duration_seconds = self._parse_duration_seconds_or_none(raw)
+        if duration_seconds is None:
+            return "once", None, raw
+        return "once", duration_seconds, self._format_compact_duration_seconds(duration_seconds)
+
+    def _format_schedule_duration_label(self, task: dict[str, Any]) -> str:
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        if schedule_kind == "permanent":
+            return "永久"
+        if schedule_kind == "daily":
+            return "每天"
+        start_at = self._parse_dt(task.get("start_at"))
+        end_at = self._parse_dt(task.get("end_at"))
+        if start_at and end_at and end_at > start_at:
+            return self._format_duration_seconds(int((end_at - start_at).total_seconds()))
+        return "未设置"
+
+    def _task_cycle_start(self, task: dict[str, Any], now: datetime) -> datetime | None:
+        start_at = self._parse_dt(task.get("start_at"))
+        if start_at is None:
+            return None
+        if self._normalize_schedule_kind(task.get("schedule_kind")) != "daily":
+            return start_at
+        if now <= start_at:
+            return start_at
+        cycle_seconds = 86400
+        elapsed = max(int((now - start_at).total_seconds()), 0)
+        cycles = elapsed // cycle_seconds
+        return start_at + timedelta(days=cycles)
+
+    def _task_cycle_end(self, task: dict[str, Any], now: datetime) -> datetime | None:
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        if schedule_kind == "permanent":
+            return None
+        if schedule_kind == "daily":
+            cycle_start = self._task_cycle_start(task, now)
+            if cycle_start is None:
+                return None
+            return cycle_start + timedelta(days=1)
+        return self._parse_dt(task.get("end_at"))
+
+    def _format_reminder_limit_text(self, limit: int) -> str:
+        if limit <= 0:
+            return "不限制"
+        return f"最多 {limit} 次"
 
     def _parse_settings_datetime(self, value: Any) -> datetime | None:
         text = str(value or "").strip()
@@ -519,7 +593,7 @@ class WorkSupervisorPlugin(Star):
                     """
                     UPDATE supervision_tasks
                     SET status = 'expired', updated_at = ?
-                    WHERE status = 'active' AND end_at <= ?
+                    WHERE status = 'active' AND schedule_kind = 'once' AND end_at != '' AND end_at <= ?
                     """,
                     (now_iso, now_iso),
                 )
@@ -882,30 +956,46 @@ class WorkSupervisorPlugin(Star):
             target_user_id,
             session_id,
             task_title,
-            item.get("deadline_at") or item.get("duration") or "",
+            item.get("end_at") or item.get("deadline_at") or item.get("duration") or "",
         )
-        duration_seconds = self._parse_duration_seconds(
-            str(item.get("duration") or ""),
-            self._default_duration_minutes() * 60,
+        schedule_kind, duration_seconds, duration_label = self._parse_settings_duration_spec(
+            item.get("duration")
         )
         cooldown_seconds = self._parse_duration_seconds(
-            str(item.get("cooldown") or ""),
+            str(item.get("reminder_interval") or item.get("cooldown") or ""),
             self._default_cooldown_minutes() * 60,
         )
         try:
-            todo_pick_count = max(int(item.get("todo_pick_count") or self._default_todo_pick_count()), 1)
+            reminder_limit = max(int(item.get("reminder_count") or 0), 0)
         except (TypeError, ValueError):
-            todo_pick_count = self._default_todo_pick_count()
+            reminder_limit = 0
+        todo_pick_count: int | None = None
+        if item.get("todo_pick_count") not in {None, ""}:
+            try:
+                todo_pick_count = max(int(item.get("todo_pick_count")), 1)
+            except (TypeError, ValueError):
+                todo_pick_count = self._default_todo_pick_count()
         todo_items = self._parse_todo_items(item.get("todo_items", ""))
         start_at = self._parse_settings_datetime(item.get("start_at")) or now
-        deadline_at = self._parse_settings_datetime(item.get("deadline_at"))
-        end_at = deadline_at or (start_at + timedelta(seconds=duration_seconds))
-        if end_at <= start_at:
+        end_at = self._parse_settings_datetime(item.get("end_at") or item.get("deadline_at"))
+        if end_at is not None:
+            schedule_kind = "once"
+            duration_seconds = max(int((end_at - start_at).total_seconds()), 60)
+            duration_label = self._format_compact_duration_seconds(duration_seconds)
+        elif schedule_kind == "once" and duration_seconds is not None:
+            end_at = start_at + timedelta(seconds=duration_seconds)
+            duration_label = self._format_compact_duration_seconds(duration_seconds)
+
+        if end_at is not None and end_at <= start_at:
             logger.warning(
-                "WorkSupervisor settings task ignored: deadline_at must be later than start_at."
+                "WorkSupervisor settings task ignored: end_at must be later than start_at."
             )
             return None
-        duration_seconds = max(int((end_at - start_at).total_seconds()), 60)
+        if end_at is None and schedule_kind == "once":
+            logger.warning(
+                "WorkSupervisor settings task ignored: duration or end_at is required."
+            )
+            return None
 
         parsed = {
             "target_user_id": target_user_id,
@@ -916,10 +1006,15 @@ class WorkSupervisorPlugin(Star):
             "created_by_user_name": str(item.get("created_by_user_name") or "机器人").strip() or "机器人",
             "task_title": task_title,
             "todo_items": todo_items,
+            "schedule_kind": schedule_kind,
             "start_at": start_at,
-            "duration_seconds": duration_seconds,
+            "duration_seconds": max(int(duration_seconds or 0), 0),
+            "duration_label": duration_label,
             "cooldown_seconds": max(cooldown_seconds, 0),
-            "todo_pick_count": min(max(todo_pick_count, 1), max(len(todo_items), 1), 5),
+            "reminder_limit": reminder_limit,
+            "todo_pick_count": None
+            if todo_pick_count is None
+            else min(max(todo_pick_count, 1), max(len(todo_items), 1), 5),
             "end_at": end_at,
         }
         normalized_item = {
@@ -937,11 +1032,13 @@ class WorkSupervisorPlugin(Star):
             "task_title": task_title,
             "todo_items": "\n".join(todo_items),
             "start_at": self._format_time(start_at),
-            "duration": self._format_compact_duration_seconds(parsed["duration_seconds"]),
-            "deadline_at": self._format_time(end_at),
-            "cooldown": self._format_compact_duration_seconds(parsed["cooldown_seconds"]),
-            "todo_pick_count": parsed["todo_pick_count"],
+            "duration": parsed["duration_label"] or "",
+            "end_at": self._format_time(end_at) if end_at else "",
+            "reminder_interval": self._format_compact_duration_seconds(parsed["cooldown_seconds"]),
+            "reminder_count": parsed["reminder_limit"],
         }
+        if parsed["todo_pick_count"] is not None:
+            normalized_item["todo_pick_count"] = parsed["todo_pick_count"]
         return task_key, parsed, normalized_item
 
     def _task_to_settings_item(
@@ -965,8 +1062,9 @@ class WorkSupervisorPlugin(Star):
             todos = []
         todo_items = [str(item).strip() for item in todos if str(item).strip()] if isinstance(todos, list) else []
         start_at = self._parse_dt(task.get("start_at")) or self._now()
-        end_at = self._parse_dt(task.get("end_at")) or self._now()
-        duration_seconds = max(int((end_at - start_at).total_seconds()), 60)
+        end_at = self._parse_dt(task.get("end_at"))
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        duration_label = self._format_schedule_duration_label(task)
         session_id = str(task.get("trigger_session_id") or "")
         group_id = str(task.get("trigger_group_id") or "")
         if not group_id:
@@ -991,9 +1089,10 @@ class WorkSupervisorPlugin(Star):
             "task_title": str(task.get("task_title") or ""),
             "todo_items": "\n".join(todo_items),
             "start_at": self._format_time(start_at),
-            "duration": self._format_compact_duration_seconds(duration_seconds),
-            "deadline_at": self._format_time(end_at),
-            "cooldown": self._format_compact_duration_seconds(int(task.get("cooldown_seconds") or 0)),
+            "duration": duration_label,
+            "end_at": self._format_time(end_at) if schedule_kind == "once" and end_at else "",
+            "reminder_interval": self._format_compact_duration_seconds(int(task.get("cooldown_seconds") or 0)),
+            "reminder_count": int(task.get("reminder_limit") or 0),
             "todo_pick_count": int(task.get("todo_pick_count") or 1),
         }
 
@@ -1022,7 +1121,11 @@ class WorkSupervisorPlugin(Star):
                 desired_keys.add(task_key)
 
                 active_by_key = self._find_active_task_by_settings_key(conn, task_key)
-                if parsed["end_at"] <= now:
+                if (
+                    parsed["schedule_kind"] == "once"
+                    and parsed["end_at"] is not None
+                    and parsed["end_at"] <= now
+                ):
                     if active_by_key:
                         self._mark_task_status(conn, int(active_by_key["id"]), "expired", now)
                     continue
@@ -1036,6 +1139,11 @@ class WorkSupervisorPlugin(Star):
                     continue
 
                 if active_by_key:
+                    todo_pick_count = (
+                        parsed["todo_pick_count"]
+                        if parsed["todo_pick_count"] is not None
+                        else int(active_by_key.get("todo_pick_count") or self._default_todo_pick_count())
+                    )
                     self._update_active_task_from_settings(
                         conn,
                         int(active_by_key["id"]),
@@ -1047,10 +1155,12 @@ class WorkSupervisorPlugin(Star):
                         created_by_user_name=parsed["created_by_user_name"],
                         task_title=parsed["task_title"],
                         todo_items=parsed["todo_items"],
+                        schedule_kind=parsed["schedule_kind"],
                         start_at=parsed["start_at"],
                         end_at=parsed["end_at"],
                         cooldown_seconds=parsed["cooldown_seconds"],
-                        todo_pick_count=parsed["todo_pick_count"],
+                        reminder_limit=parsed["reminder_limit"],
+                        todo_pick_count=todo_pick_count,
                         now=now,
                     )
                     continue
@@ -1063,6 +1173,11 @@ class WorkSupervisorPlugin(Star):
                     conn.commit()
                     active_by_key = self._find_active_task_by_settings_key(conn, task_key)
                     if active_by_key:
+                        todo_pick_count = (
+                            parsed["todo_pick_count"]
+                            if parsed["todo_pick_count"] is not None
+                            else int(active_by_key.get("todo_pick_count") or self._default_todo_pick_count())
+                        )
                         self._update_active_task_from_settings(
                             conn,
                             int(active_by_key["id"]),
@@ -1074,14 +1189,21 @@ class WorkSupervisorPlugin(Star):
                             created_by_user_name=parsed["created_by_user_name"],
                             task_title=parsed["task_title"],
                             todo_items=parsed["todo_items"],
+                            schedule_kind=parsed["schedule_kind"],
                             start_at=parsed["start_at"],
                             end_at=parsed["end_at"],
                             cooldown_seconds=parsed["cooldown_seconds"],
-                            todo_pick_count=parsed["todo_pick_count"],
+                            reminder_limit=parsed["reminder_limit"],
+                            todo_pick_count=todo_pick_count,
                             now=now,
                         )
                     continue
 
+                todo_pick_count = (
+                    parsed["todo_pick_count"]
+                    if parsed["todo_pick_count"] is not None
+                    else self._default_todo_pick_count()
+                )
                 self._save_task(
                     conn,
                     target_user_id=parsed["target_user_id"],
@@ -1092,9 +1214,11 @@ class WorkSupervisorPlugin(Star):
                     created_by_user_name=parsed["created_by_user_name"],
                     task_title=parsed["task_title"],
                     todo_items=parsed["todo_items"],
+                    schedule_kind=parsed["schedule_kind"],
                     duration_seconds=parsed["duration_seconds"],
                     cooldown_seconds=parsed["cooldown_seconds"],
-                    todo_pick_count=parsed["todo_pick_count"],
+                    reminder_limit=parsed["reminder_limit"],
+                    todo_pick_count=todo_pick_count,
                     now=now,
                     start_at=parsed["start_at"],
                     end_at=parsed["end_at"],
@@ -1164,6 +1288,29 @@ class WorkSupervisorPlugin(Star):
         ).fetchone()
         return dict(row) if row else None
 
+    def _count_task_reminders(
+        self,
+        conn: sqlite3.Connection,
+        task_id: int,
+        *,
+        since: datetime | None = None,
+    ) -> int:
+        if since is None:
+            row = conn.execute(
+                "SELECT COUNT(1) AS total FROM reminder_logs WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT COUNT(1) AS total
+                FROM reminder_logs
+                WHERE task_id = ? AND created_at >= ?
+                """,
+                (task_id, self._iso(since)),
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
     def _find_active_task_by_settings_key(
         self,
         conn: sqlite3.Connection,
@@ -1210,21 +1357,26 @@ class WorkSupervisorPlugin(Star):
         cooldown_seconds: int,
         todo_pick_count: int,
         now: datetime,
+        schedule_kind: str = "once",
+        reminder_limit: int = 0,
         start_at: datetime | None = None,
         end_at: datetime | None = None,
         settings_task_key: str = "",
     ) -> int:
         start_at = start_at or now
-        end_at = end_at or (start_at + timedelta(seconds=duration_seconds))
+        normalized_schedule_kind = self._normalize_schedule_kind(schedule_kind)
+        resolved_end_at = end_at
+        if resolved_end_at is None and normalized_schedule_kind == "once":
+            resolved_end_at = start_at + timedelta(seconds=duration_seconds)
         cursor = conn.execute(
             """
             INSERT INTO supervision_tasks (
                 target_user_id, target_user_name, trigger_session_id, trigger_group_id,
                 created_by_user_id, created_by_user_name, task_title, todo_items_json,
-                status, start_at, end_at, cooldown_seconds, todo_pick_count,
+                status, start_at, end_at, schedule_kind, cooldown_seconds, reminder_limit, todo_pick_count,
                 last_reminded_at, completed_at, cancelled_at, created_at, updated_at,
                 settings_task_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, '', '', '', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?)
             """,
             (
                 target_user_id,
@@ -1236,8 +1388,10 @@ class WorkSupervisorPlugin(Star):
                 task_title,
                 json.dumps(todo_items, ensure_ascii=False),
                 self._iso(start_at),
-                self._iso(end_at),
+                self._iso(resolved_end_at) if resolved_end_at else "",
+                normalized_schedule_kind,
                 cooldown_seconds,
+                max(int(reminder_limit), 0),
                 todo_pick_count,
                 self._iso(now),
                 self._iso(now),
@@ -1260,9 +1414,11 @@ class WorkSupervisorPlugin(Star):
         created_by_user_name: str,
         task_title: str,
         todo_items: list[str],
+        schedule_kind: str,
         start_at: datetime,
-        end_at: datetime,
+        end_at: datetime | None,
         cooldown_seconds: int,
+        reminder_limit: int,
         todo_pick_count: int,
         now: datetime,
     ) -> None:
@@ -1271,8 +1427,8 @@ class WorkSupervisorPlugin(Star):
             UPDATE supervision_tasks
             SET target_user_id = ?, target_user_name = ?, trigger_session_id = ?,
                 trigger_group_id = ?, created_by_user_id = ?, created_by_user_name = ?,
-                task_title = ?, todo_items_json = ?, start_at = ?, end_at = ?, cooldown_seconds = ?,
-                todo_pick_count = ?, updated_at = ?
+                task_title = ?, todo_items_json = ?, start_at = ?, end_at = ?, schedule_kind = ?,
+                cooldown_seconds = ?, reminder_limit = ?, todo_pick_count = ?, updated_at = ?
             WHERE id = ? AND status = 'active'
             """,
             (
@@ -1285,8 +1441,10 @@ class WorkSupervisorPlugin(Star):
                 task_title,
                 json.dumps(todo_items, ensure_ascii=False),
                 self._iso(start_at),
-                self._iso(end_at),
+                self._iso(end_at) if end_at else "",
+                self._normalize_schedule_kind(schedule_kind),
                 cooldown_seconds,
+                max(int(reminder_limit), 0),
                 todo_pick_count,
                 self._iso(now),
                 task_id,
@@ -1422,8 +1580,9 @@ class WorkSupervisorPlugin(Star):
             f"已开始监督：{target_user_name}",
             f"任务：{parsed['title']}",
             f"持续时间：{self._format_duration_seconds(parsed['duration_seconds'])}",
-            f"冷却时间：{self._format_duration_seconds(parsed['cooldown_seconds'])}",
-            f"截止时间：{self._format_time(self._parse_dt(task.get('end_at')))}",
+            f"期间提醒间隔：{self._format_duration_seconds(parsed['cooldown_seconds'])}",
+            "提醒次数：不限制",
+            f"结束时间：{self._format_time(self._parse_dt(task.get('end_at')))}",
         ]
         if parsed["todos"]:
             lines.append("待办：")
@@ -1495,6 +1654,15 @@ class WorkSupervisorPlugin(Star):
         async with self._db_lock:
             with self._connect() as conn:
                 task = self._find_active_task_by_target(conn, target_user_id)
+                if task is not None:
+                    since = None
+                    if self._normalize_schedule_kind(task.get("schedule_kind")) == "daily":
+                        since = self._task_cycle_start(task, self._now())
+                    task["_reminder_sent"] = self._count_task_reminders(
+                        conn,
+                        int(task["id"]),
+                        since=since,
+                    )
 
         if task is None:
             return "当前没有进行中的监督任务。"
@@ -1623,7 +1791,7 @@ class WorkSupervisorPlugin(Star):
         todos: list[str],
         now: datetime,
     ) -> str:
-        end_at = self._parse_dt(task.get("end_at"))
+        end_at = self._task_cycle_end(task, now)
         title = str(task.get("task_title") or "当前任务").strip()
         todo_text = "、".join(todos) if todos else "把手上的任务推进下去"
         mapping = {
@@ -1663,15 +1831,16 @@ class WorkSupervisorPlugin(Star):
         if provider is None:
             return fallback
 
-        end_at = self._parse_dt(task.get("end_at"))
+        end_at = self._task_cycle_end(task, now)
         prompt_lines = [
             f"目标用户：{task.get('target_user_name') or task.get('target_user_id')}",
             f"监督发起人：{task.get('created_by_user_name') or task.get('created_by_user_id')}",
             f"任务标题：{task.get('task_title') or '未命名任务'}",
             f"当前时间：{self._format_time(now)}",
-            f"截止时间：{self._format_time(end_at)}",
+            f"结束时间：{self._format_time(end_at)}",
             f"剩余时间：{self._format_remaining(end_at, now) if end_at else '未知'}",
-            f"冷却时间：{self._format_duration_seconds(int(task.get('cooldown_seconds') or 0))}",
+            f"期间提醒间隔：{self._format_duration_seconds(int(task.get('cooldown_seconds') or 0))}",
+            f"提醒次数上限：{self._format_reminder_limit_text(int(task.get('reminder_limit') or 0))}",
             f"这次提醒重点待办：{'；'.join(todos) if todos else '没有单独待办，直接催这个任务'}",
             "请直接输出最终催促文本，不要自称模型，不要写“好的/当然”。",
         ]
@@ -1709,41 +1878,85 @@ class WorkSupervisorPlugin(Star):
             return items
         return random.sample(items, pick_count)
 
-    def _reminder_due(self, task: dict[str, Any], now: datetime) -> bool:
+    def _task_reminder_count_exhausted(
+        self,
+        conn: sqlite3.Connection,
+        task: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        limit = max(int(task.get("reminder_limit") or 0), 0)
+        if limit <= 0:
+            return False
+        since = None
+        if self._normalize_schedule_kind(task.get("schedule_kind")) == "daily":
+            since = self._task_cycle_start(task, now)
+        sent = self._count_task_reminders(conn, int(task["id"]), since=since)
+        return sent >= limit
+
+    def _reminder_due(
+        self,
+        conn: sqlite3.Connection,
+        task: dict[str, Any],
+        now: datetime,
+    ) -> bool:
         start_at = self._parse_dt(task.get("start_at"))
         if start_at and start_at > now:
             return False
-        end_at = self._parse_dt(task.get("end_at"))
-        if end_at and end_at <= now:
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        end_at = self._task_cycle_end(task, now)
+        if schedule_kind == "once" and end_at and end_at <= now:
+            return False
+        if self._task_reminder_count_exhausted(conn, task, now):
             return False
         last_reminded_at = self._parse_dt(task.get("last_reminded_at"))
         if last_reminded_at is None:
             return True
+        if schedule_kind == "daily":
+            cycle_start = self._task_cycle_start(task, now)
+            if cycle_start and last_reminded_at < cycle_start:
+                return True
         cooldown_seconds = int(task.get("cooldown_seconds") or 0)
         return (now - last_reminded_at).total_seconds() >= cooldown_seconds
 
     def _render_task_status(self, task: dict[str, Any], now: datetime) -> str:
-        end_at = self._parse_dt(task.get("end_at"))
         start_at = self._parse_dt(task.get("start_at"))
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        end_at = self._task_cycle_end(task, now)
         last_reminded_at = self._parse_dt(task.get("last_reminded_at"))
         try:
             todos = json.loads(str(task.get("todo_items_json") or "[]"))
         except Exception:
             todos = []
         todo_items = [str(item).strip() for item in todos if str(item).strip()]
+        reminder_limit = max(int(task.get("reminder_limit") or 0), 0)
+        reminder_sent = int(task.get("_reminder_sent") or 0)
+        if reminder_limit > 0:
+            reminder_limit_text = f"{reminder_sent}/{reminder_limit}"
+        else:
+            reminder_limit_text = self._format_reminder_limit_text(reminder_limit)
+        if schedule_kind == "permanent":
+            end_text = "不自动结束"
+        elif schedule_kind == "daily":
+            end_text = f"{self._format_time(end_at)}（每天重复）" if end_at else "每天重复"
+        else:
+            end_text = self._format_time(end_at)
         lines = [
             f"目标：{task.get('target_user_name') or task.get('target_user_id')}",
             f"任务：{task.get('task_title') or '未命名任务'}",
             f"状态：{task.get('status')}",
             f"开始时间：{self._format_time(start_at)}",
-            f"截止时间：{self._format_time(end_at)}",
-            f"冷却时间：{self._format_duration_seconds(int(task.get('cooldown_seconds') or 0))}",
+            f"持续时间：{self._format_schedule_duration_label(task)}",
+            f"结束时间：{end_text}",
+            f"期间提醒间隔：{self._format_duration_seconds(int(task.get('cooldown_seconds') or 0))}",
+            f"提醒次数：{reminder_limit_text}",
             f"上次提醒：{self._format_time(last_reminded_at)}",
         ]
         if start_at and start_at > now and str(task.get("status")) == "active":
             lines.append(self._format_until_start(start_at, now))
-        elif end_at and str(task.get("status")) == "active":
+        elif schedule_kind == "once" and end_at and str(task.get("status")) == "active":
             lines.append(self._format_remaining(end_at, now))
+        elif schedule_kind == "daily" and end_at and str(task.get("status")) == "active":
+            lines.append(self._format_remaining(end_at, now).replace("剩余时间", "本轮剩余时间", 1))
         if todo_items:
             lines.append("待办：")
             lines.extend(f"{index}. {item}" for index, item in enumerate(todo_items, start=1))
@@ -1849,19 +2062,18 @@ class WorkSupervisorPlugin(Star):
         if not sender_id or not session_id:
             return
 
+        now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
                 task = self._find_active_task_for_session(conn, sender_id, session_id)
+                if task and not self._reminder_due(conn, task, now):
+                    task = None
 
         if not task:
             return
 
         task_id = int(task["id"])
         if task_id in self._inflight_task_ids:
-            return
-
-        now = self._now()
-        if not self._reminder_due(task, now):
             return
 
         self._inflight_task_ids.add(task_id)
@@ -2024,13 +2236,13 @@ class WorkSupervisorPlugin(Star):
             "监督 状态 [@目标]\n"
             "监督 完成 [@目标]\n"
             "监督 取消 [@目标]\n\n"
-            "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=默认配置值；抽取=每次提醒展示几条待办。\n\n"
+            "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=提醒间隔；抽取=每次提醒展示几条待办。\n\n"
             "播报命令：\n"
             "更新内容 设置 时间=21:00 内容=今天更新了第一章和封面\n"
             "内容预告 设置 时间=20:00 内容=明天预告第二章和设定图\n"
             "更新内容 状态 / 更新内容 开 / 更新内容 关 / 更新内容 立即发送\n"
             "内容预告 状态 / 内容预告 开 / 内容预告 关 / 内容预告 立即发送\n\n"
-            "提醒逻辑：目标用户在原会话中发言时，如果超过冷却时间，就会触发一次监督提醒。"
+            "提醒逻辑：目标用户在原会话中发言时，如果超过提醒间隔，就会触发一次监督提醒。"
         )
         yield event.plain_result(help_text)
 

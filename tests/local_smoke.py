@@ -311,9 +311,9 @@ async def run_smoke_test() -> list[str]:
                 "todo_items": "拆需求\n写代码",
                 "start_at": plugin._format_time(settings_start_at),
                 "duration": "2h",
-                "deadline_at": plugin._format_time(settings_deadline_at),
-                "cooldown": "30m",
-                "todo_pick_count": 2,
+                "end_at": plugin._format_time(settings_deadline_at),
+                "reminder_interval": "30m",
+                "reminder_count": 2,
             }
         ]
         await plugin._sync_settings_tasks_from_config(force=True)
@@ -328,10 +328,15 @@ async def run_smoke_test() -> list[str]:
         config_status = await collect_results(plugin.status_supervision(config_event))
         assert config_status and "设置页任务" in config_status[0]
         assert plugin._format_time(settings_start_at) in config_status[0]
+        assert "期间提醒间隔：30 分钟" in config_status[0]
+        assert "提醒次数：0/2" in config_status[0]
         assert any(
             item.get("task_title") == "设置页任务"
             and item.get("session_id") == "aiocqhttp:FriendMessage:u300"
             and item.get("start_at") == plugin._format_time(settings_start_at)
+            and item.get("end_at") == plugin._format_time(settings_deadline_at)
+            and item.get("reminder_interval") == "30m"
+            and item.get("reminder_count") == 2
             and item.get("task_key")
             for item in plugin.config.get("settings_tasks", [])
         )
@@ -358,8 +363,8 @@ async def run_smoke_test() -> list[str]:
                 "todo_items": "先别催",
                 "start_at": plugin._format_time(future_start_at),
                 "duration": "1h",
-                "cooldown": "10m",
-                "todo_pick_count": 1,
+                "reminder_interval": "10m",
+                "reminder_count": 1,
             }
         ]
         await plugin._sync_settings_tasks_from_config(force=True)
@@ -380,6 +385,87 @@ async def run_smoke_test() -> list[str]:
         plugin.config["settings_tasks"] = []
         await plugin._sync_settings_tasks_from_config(force=True)
         passed.append("future_start_waits")
+
+        daily_start_at = plugin._now() - plugin_main.timedelta(minutes=5)
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u302",
+                "target_user_name": "DailyUser",
+                "task_title": "每天任务",
+                "todo_items": "打卡",
+                "start_at": plugin._format_time(daily_start_at),
+                "duration": "每天",
+                "reminder_interval": "0m",
+                "reminder_count": 1,
+            }
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        daily_status_event = FakeEvent(
+            sender_id="u302",
+            sender_name="DailyUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u302",
+            message_str="监督 状态",
+            messages=[Plain("监督 状态")],
+            private=True,
+        )
+        daily_status = await collect_results(plugin.status_supervision(daily_status_event))
+        assert daily_status and "持续时间：每天" in daily_status[0]
+        assert any(
+            item.get("task_title") == "每天任务" and item.get("duration") == "每天"
+            for item in plugin.config.get("settings_tasks", [])
+        )
+        plugin.config["settings_tasks"] = []
+        await plugin._sync_settings_tasks_from_config(force=True)
+        passed.append("daily_duration_keyword")
+
+        permanent_start_at = plugin._now() - plugin_main.timedelta(minutes=5)
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u303",
+                "target_user_name": "ForeverUser",
+                "task_title": "永久任务",
+                "todo_items": "持续推进",
+                "start_at": plugin._format_time(permanent_start_at),
+                "duration": "永久",
+                "reminder_interval": "0m",
+                "reminder_count": 1,
+            }
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        permanent_event = FakeEvent(
+            sender_id="u303",
+            sender_name="ForeverUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u303",
+            message_str="我来一次",
+            messages=[Plain("我来一次")],
+            private=True,
+        )
+        await plugin.on_message(permanent_event)
+        assert len(permanent_event.sent_messages) == 1
+        permanent_event_second = FakeEvent(
+            sender_id="u303",
+            sender_name="ForeverUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u303",
+            message_str="我再来一次",
+            messages=[Plain("我再来一次")],
+            private=True,
+        )
+        await plugin.on_message(permanent_event_second)
+        assert len(permanent_event_second.sent_messages) == 0
+        permanent_status = await collect_results(plugin.status_supervision(permanent_event_second))
+        assert permanent_status and "持续时间：永久" in permanent_status[0]
+        assert "提醒次数：1/1" in permanent_status[0]
+        plugin.config["settings_tasks"] = []
+        await plugin._sync_settings_tasks_from_config(force=True)
+        passed.append("permanent_duration_limit")
 
         plain_supervision_phrase_event = FakeEvent(
             sender_id="u102",
