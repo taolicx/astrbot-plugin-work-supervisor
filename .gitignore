@@ -1,0 +1,24 @@
+# Local runtime state
+data/
+.tmp/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Codex/internal sidecar notes
+CODEX_CONTEXT.txt
+CODEX_CONTEXT.bin.txt
+*.codex.txt
+*.codex.bin.txt
+.codex-sidecar/
+
+# Local editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

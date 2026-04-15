@@ -1,0 +1,232 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "hint": "关闭后，督工提醒和定时播报都不会执行。",
+    "default": true
+  },
+  "ignore_self_messages": {
+    "description": "忽略机器人自己发出的消息",
+    "type": "bool",
+    "hint": "建议保持开启，避免机器人自己发出的消息再次触发督工逻辑。",
+    "default": true
+  },
+  "allow_private_chat": {
+    "description": "允许私聊使用",
+    "type": "bool",
+    "hint": "关闭后，只能在群聊中使用督工命令和播报设置命令。",
+    "default": true
+  },
+  "allowed_group_ids": {
+    "description": "允许使用的群号白名单",
+    "type": "text",
+    "hint": "留空表示所有群都允许。可用逗号或换行分隔。",
+    "default": ""
+  },
+  "blocked_group_ids": {
+    "description": "禁用的群号黑名单",
+    "type": "text",
+    "hint": "黑名单优先于白名单。可用逗号或换行分隔。",
+    "default": ""
+  },
+  "allow_supervise_others": {
+    "description": "允许给别人挂督工",
+    "type": "bool",
+    "hint": "关闭后，只允许用户给自己挂督工任务。",
+    "default": true
+  },
+  "allow_non_admin_supervise_others": {
+    "description": "允许普通成员给别人挂督工",
+    "type": "bool",
+    "hint": "关闭后，只有管理员可以在群里 @别人 发起督工。",
+    "default": false
+  },
+  "default_duration_minutes": {
+    "description": "默认督工时长（分钟）",
+    "type": "int",
+    "hint": "创建督工任务时如果没写“时长=...”，就用这里的默认值。",
+    "default": 180
+  },
+  "default_cooldown_minutes": {
+    "description": "默认提醒冷却时间（分钟）",
+    "type": "int",
+    "hint": "同一个任务在冷却期内不会重复催促。",
+    "default": 120
+  },
+  "default_todo_pick_count": {
+    "description": "每次提醒默认展示几条待办",
+    "type": "int",
+    "hint": "如果任务里有多个待办，提醒时会抽取这么多条。",
+    "default": 3
+  },
+  "max_todo_items_per_task": {
+    "description": "单个任务最多允许多少条待办",
+    "type": "int",
+    "hint": "超过上限的待办会被截断，避免提醒内容过长。",
+    "default": 12
+  },
+  "settings_tasks": {
+    "description": "设置页督工任务",
+    "type": "template_list",
+    "hint": "这里展示当前进行中的督工任务，也可以直接新增任务。命令创建的任务会同步到这里；完成、取消或过期后会自动移除。私聊任务只填目标用户ID即可；群聊任务需要填写群号或完整会话ID。",
+    "default": [],
+    "templates": {
+      "supervision_task": {
+        "name": "督工任务",
+        "hint": "新增一条进行中的督工任务。任务ID可留空，插件会自动生成。",
+        "items": {
+          "task_key": {
+            "description": "任务ID",
+            "type": "string",
+            "hint": "可留空。插件会自动生成，用于把设置页任务和内部数据库任务对应起来。",
+            "default": ""
+          },
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "hint": "关闭后，这条设置任务会被视为删除，并取消对应进行中的督工。",
+            "default": true
+          },
+          "platform_id": {
+            "description": "平台ID",
+            "type": "string",
+            "hint": "通常是 napcat。用于在未填写完整会话ID时自动生成会话来源。",
+            "default": "napcat"
+          },
+          "session_type": {
+            "description": "会话类型",
+            "type": "string",
+            "hint": "私聊填 FriendMessage，群聊填 GroupMessage。填写完整会话ID时这里仅用于展示。",
+            "default": "FriendMessage"
+          },
+          "session_id": {
+            "description": "完整会话ID",
+            "type": "string",
+            "hint": "可留空自动生成。私聊示例：napcat:FriendMessage:目标QQ；群聊示例：napcat:GroupMessage:群号。",
+            "default": ""
+          },
+          "group_id": {
+            "description": "群号",
+            "type": "string",
+            "hint": "群聊任务填写。私聊任务留空。",
+            "default": ""
+          },
+          "target_user_id": {
+            "description": "目标用户ID",
+            "type": "string",
+            "hint": "必填。通常是 QQ 号。",
+            "default": ""
+          },
+          "target_user_name": {
+            "description": "目标显示名",
+            "type": "string",
+            "hint": "可留空，留空时用目标用户ID展示。",
+            "default": ""
+          },
+          "created_by_user_id": {
+            "description": "发起人ID",
+            "type": "string",
+            "hint": "可留空，留空时显示为 plugin_settings。",
+            "default": "plugin_settings"
+          },
+          "created_by_user_name": {
+            "description": "发起人显示名",
+            "type": "string",
+            "hint": "可留空，留空时显示为“插件设置”。",
+            "default": "插件设置"
+          },
+          "task_title": {
+            "description": "任务",
+            "type": "string",
+            "hint": "必填。要催促完成的任务标题。",
+            "default": ""
+          },
+          "todo_items": {
+            "description": "待办",
+            "type": "text",
+            "hint": "可选。每行一条，也可以用顿号或逗号分隔。",
+            "default": ""
+          },
+          "duration": {
+            "description": "时长",
+            "type": "string",
+            "hint": "未填写截止时间时生效。示例：30m、2h、1d。",
+            "default": "3h"
+          },
+          "deadline_at": {
+            "description": "截止时间",
+            "type": "string",
+            "hint": "可留空。格式：2026-04-16 22:00。命令同步来的任务会自动填写。",
+            "default": ""
+          },
+          "cooldown": {
+            "description": "冷却时间",
+            "type": "string",
+            "hint": "示例：10m、2h。冷却期内不会重复催促。",
+            "default": "2h"
+          },
+          "todo_pick_count": {
+            "description": "提醒展示待办数",
+            "type": "int",
+            "hint": "每次提醒抽取几条待办。",
+            "default": 3
+          }
+        }
+      }
+    }
+  },
+  "fallback_reminder_templates": {
+    "description": "本地回退提醒模板",
+    "type": "text",
+    "hint": "当 LLM 不可用时使用。支持占位符：{name} {task} {todos} {remaining} {deadline} {creator}。每行一个模板。",
+    "default": "{name}，别摸了，`{task}` 还挂着。先去把这些做掉：{todos}。{remaining}\n{name}，现在不是装死的时候。`{task}` 还没完，先处理：{todos}。{remaining}"
+  },
+  "llm_enabled": {
+    "description": "启用大模型生成催促文案",
+    "type": "bool",
+    "hint": "开启后，插件会优先调用当前会话使用中的聊天模型，按人格语气生成催工内容。",
+    "default": true
+  },
+  "llm_provider_id": {
+    "description": "指定催工用的 Provider ID",
+    "type": "string",
+    "hint": "留空表示跟随当前会话的聊天模型。只有你想强制使用某个模型时才填写。",
+    "default": ""
+  },
+  "llm_follow_active_persona": {
+    "description": "跟随当前会话人格",
+    "type": "bool",
+    "hint": "开启后，会把当前 AstrBot 会话选中的人格提示词拼接进催工系统提示里。",
+    "default": true
+  },
+  "llm_custom_prompt": {
+    "description": "额外的人格与语气要求",
+    "type": "text",
+    "hint": "例如：'说话像毒舌但克制的编辑，语气凶一点，句子短一点，别卖萌。'",
+    "default": ""
+  },
+  "llm_max_output_chars": {
+    "description": "LLM 催工文案最大长度",
+    "type": "int",
+    "hint": "生成文本超过上限时会被截断，避免刷屏。",
+    "default": 180
+  },
+  "update_feature_enabled": {
+    "description": "允许使用更新内容播报",
+    "type": "bool",
+    "hint": "关闭后，即使设置了“更新内容”，调度器也不会发送。",
+    "default": true
+  },
+  "preview_feature_enabled": {
+    "description": "允许使用内容预告播报",
+    "type": "bool",
+    "hint": "关闭后，即使设置了“内容预告”，调度器也不会发送。",
+    "default": true
+  },
+  "scheduler_tick_seconds": {
+    "description": "调度器轮询间隔（秒）",
+    "type": "int",
+    "hint": "用于检查过期任务和每日播报是否到点。一般保持默认即可。",
+    "default": 20
+  }
+}
