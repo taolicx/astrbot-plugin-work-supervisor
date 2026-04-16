@@ -148,6 +148,7 @@ class FakeEvent:
     self_id: str = "bot"
     private: bool = False
     admin: bool = False
+    is_at_or_wake_command: bool = False
 
     def __post_init__(self) -> None:
         self.sent_messages: list[Any] = []
@@ -280,6 +281,35 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("self_start")
+
+        mention_bot_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:GroupMessage:g200",
+            message_str="@bot 帮我看看今天该先做什么",
+            messages=[At(name="SupervisorBot", qq="bot"), Plain(" 帮我看看今天该先做什么")],
+            group_id="g200",
+            private=False,
+        )
+        await plugin.on_message(mention_bot_event)
+        assert len(mention_bot_event.sent_messages) == 0
+        assert mention_bot_event.call_llm is True
+        assert mention_bot_event.stopped is False
+        passed.append("mention_bot_yields_to_normal_chat")
+
+        slash_command_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="/chat 帮我规划一下今天",
+            messages=[Plain("/chat 帮我规划一下今天")],
+            private=True,
+        )
+        await plugin.on_message(slash_command_event)
+        assert len(slash_command_event.sent_messages) == 0
+        assert slash_command_event.call_llm is True
+        assert slash_command_event.stopped is False
+        passed.append("slash_command_yields_to_normal_chat")
 
         self_status = await collect_results(plugin.status_supervision(self_event))
         assert self_status and "写第一章" in self_status[0] and "active" in self_status[0]

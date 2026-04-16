@@ -42,11 +42,13 @@ SKIP_COMMAND_PREFIXES = (
     "/内容预告",
 )
 
+GENERIC_WAKE_PREFIXES = ("/", "／")
+
 @register(
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.5",
+    "0.1.6",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -525,6 +527,33 @@ class WorkSupervisorPlugin(Star):
     def _skip_message_for_commands(self, text: str) -> bool:
         normalized = self._normalize_command_text(text)
         return any(normalized.startswith(prefix) for prefix in SKIP_COMMAND_PREFIXES)
+
+    def _message_mentions_self(self, event: AstrMessageEvent) -> bool:
+        self_id = str(event.get_self_id() or "").strip()
+        if not self_id:
+            return False
+        for component in event.get_messages():
+            if not isinstance(component, At):
+                continue
+            qq = str(getattr(component, "qq", "") or "").strip()
+            if qq and qq == self_id:
+                return True
+        return False
+
+    def _should_yield_to_normal_chat(
+        self,
+        event: AstrMessageEvent,
+        plain_text: str,
+    ) -> bool:
+        # Passive supervision must not swallow explicit bot wake-ups. When the
+        # target is intentionally talking to AstrBot via @ or wake-prefix
+        # commands, leave the message to the normal chat/command pipeline.
+        if bool(getattr(event, "is_at_or_wake_command", False)):
+            return True
+        if self._message_mentions_self(event):
+            return True
+        normalized = self._normalize_command_text(plain_text)
+        return normalized.startswith(GENERIC_WAKE_PREFIXES)
 
     def _normalize_command_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "").strip())
@@ -2216,6 +2245,8 @@ class WorkSupervisorPlugin(Star):
             return
 
         plain_text = self._extract_plain_text(event)
+        if self._should_yield_to_normal_chat(event, plain_text):
+            return
         if self._skip_message_for_commands(plain_text):
             return
 
