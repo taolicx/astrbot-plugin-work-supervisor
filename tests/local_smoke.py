@@ -360,6 +360,30 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("self_start")
+
+        second_self_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="监督 开始 任务=做海报 待办=出图、排版 时长=2h 冷却=1h",
+            messages=[Plain("监督 开始 任务=做海报 待办=出图、排版 时长=2h 冷却=1h")],
+            private=True,
+        )
+        create_self_second = await collect_results(
+            plugin.start_supervision(
+                second_self_event,
+                "任务=做海报 待办=出图、排版 时长=2h 冷却=1h",
+            )
+        )
+        assert create_self_second and "做海报" in create_self_second[0]
+        with plugin._connect() as conn:
+            self_tasks = plugin._list_active_tasks_by_target(conn, "u100")
+        assert len(self_tasks) == 2
+        self_tasks_by_title = {str(task["task_title"]): int(task["id"]) for task in self_tasks}
+        first_self_task_id = self_tasks_by_title["写第一章"]
+        second_self_task_id = self_tasks_by_title["做海报"]
+        passed.append("self_start_second_task")
+
         plugin.config["normal_chat_yield_prefixes"] = ["/", "！"]
 
         mention_bot_event = FakeEvent(
@@ -405,9 +429,33 @@ async def run_smoke_test() -> list[str]:
         assert fullwidth_bang_event.stopped is False
         passed.append("custom_yield_prefix")
 
-        self_status = await collect_results(plugin.status_supervision(self_event))
-        assert self_status and "写第一章" in self_status[0] and "active" in self_status[0]
-        passed.append("self_status")
+        self_status_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="监督 状态",
+            messages=[Plain("监督 状态")],
+            private=True,
+        )
+        self_status = await collect_results(plugin.status_supervision(self_status_event))
+        assert self_status and "当前共有 2 个进行中的监督任务" in self_status[0]
+        assert f"#{first_self_task_id}" in self_status[0]
+        assert f"#{second_self_task_id}" in self_status[0]
+        passed.append("self_status_multi_task_list")
+
+        self_selected_status_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str=f"监督 状态 #{first_self_task_id}",
+            messages=[Plain(f"监督 状态 #{first_self_task_id}")],
+            private=True,
+        )
+        self_selected_status = await collect_results(
+            plugin.status_supervision(self_selected_status_event, f"#{first_self_task_id}")
+        )
+        assert self_selected_status and "写第一章" in self_selected_status[0] and "active" in self_selected_status[0]
+        passed.append("self_status_selected_task")
 
         self_cross_session_event = FakeEvent(
             sender_id="u100",
@@ -424,7 +472,17 @@ async def run_smoke_test() -> list[str]:
         assert self_cross_session_event.stopped is True
         passed.append("private_task_cross_session_reminder")
 
-        self_done = await collect_results(plugin.complete_supervision(self_event))
+        self_complete_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str=f"监督 完成 #{first_self_task_id}",
+            messages=[Plain(f"监督 完成 #{first_self_task_id}")],
+            private=True,
+        )
+        self_done = await collect_results(
+            plugin.complete_supervision(self_complete_event, f"#{first_self_task_id}")
+        )
         assert self_done and "写第一章" in self_done[0]
         assert not any(
             item.get("task_title") == "写第一章"
@@ -432,7 +490,34 @@ async def run_smoke_test() -> list[str]:
         )
         passed.append("self_complete")
 
-        no_task = await collect_results(plugin.status_supervision(self_event))
+        remaining_status_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="监督 状态",
+            messages=[Plain("监督 状态")],
+            private=True,
+        )
+        remaining_status = await collect_results(plugin.status_supervision(remaining_status_event))
+        assert remaining_status and "做海报" in remaining_status[0]
+        assert "写第一章" not in remaining_status[0]
+        passed.append("self_status_after_selected_complete")
+
+        self_cancel_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="监督 取消 任务=做海报",
+            messages=[Plain("监督 取消 任务=做海报")],
+            private=True,
+        )
+        self_cancel = await collect_results(
+            plugin.cancel_supervision(self_cancel_event, "任务=做海报")
+        )
+        assert self_cancel and "做海报" in self_cancel[0]
+        passed.append("self_cancel_selected_task")
+
+        no_task = await collect_results(plugin.status_supervision(remaining_status_event))
         assert no_task and "没有" in no_task[0]
         passed.append("self_status_after_complete")
 
@@ -480,6 +565,65 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("settings_task_import")
+
+        multi_settings_start_at = plugin._now() - plugin_main.timedelta(minutes=20)
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u305",
+                "target_user_name": "MultiConfigUser",
+                "task_title": "设置页多任务A",
+                "todo_items": "A1\nA2",
+                "start_at": plugin._format_time(multi_settings_start_at),
+                "duration": "1h",
+                "reminder_interval": "15m",
+            },
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u305",
+                "target_user_name": "MultiConfigUser",
+                "task_title": "设置页多任务B",
+                "todo_items": "B1\nB2",
+                "start_at": plugin._format_time(multi_settings_start_at),
+                "duration": "2h",
+                "reminder_interval": "20m",
+            },
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        with plugin._connect() as conn:
+            multi_settings_tasks = plugin._list_active_tasks_by_target(conn, "u305")
+        assert len(multi_settings_tasks) == 2
+        assert {str(task["task_title"]) for task in multi_settings_tasks} == {"设置页多任务A", "设置页多任务B"}
+        assert sum(
+            1
+            for item in plugin.config.get("settings_tasks", [])
+            if item.get("target_user_id") == "u305"
+        ) == 2
+        plugin.config["settings_tasks"] = [
+            {
+                "__template_key": "supervision_task",
+                "enabled": True,
+                "platform_id": "aiocqhttp",
+                "session_type": "FriendMessage",
+                "target_user_id": "u300",
+                "target_user_name": "ConfigUser",
+                "task_title": "设置页任务",
+                "todo_items": "拆需求\n写代码",
+                "start_at": plugin._format_time(settings_start_at),
+                "duration": "2h",
+                "end_at": plugin._format_time(settings_deadline_at),
+                "reminder_interval": "30m",
+                "reminder_count": 2,
+            }
+        ]
+        await plugin._sync_settings_tasks_from_config(force=True)
+        passed.append("settings_task_import_multi_same_target")
 
         await plugin._run_due_settings_initial_reminders()
         assert len(context.sent_messages) == 1

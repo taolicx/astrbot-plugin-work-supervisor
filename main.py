@@ -638,9 +638,9 @@ class WorkSupervisorPlugin(Star):
             "监督命令：\n"
             "监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
             "监督 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h\n"
-            "监督 状态 [@目标]\n"
-            "监督 完成 [@目标]\n"
-            "监督 取消 [@目标]\n\n"
+            "监督 状态 [@目标] [#任务ID/任务=任务名]\n"
+            "监督 完成 [@目标] [#任务ID/任务=任务名]\n"
+            "监督 取消 [@目标] [#任务ID/任务=任务名]\n\n"
             "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=提醒间隔；抽取=每次提醒展示几条待办。\n\n"
             "播报命令：\n"
             "更新内容 设置 时间=21:00 内容=今天更新了第一章和封面\n"
@@ -697,11 +697,23 @@ class WorkSupervisorPlugin(Star):
                         remainder.strip(),
                     )
                 if subcommand in {"状态", "查看", "查询"}:
-                    return await self._emit_direct_command_result(event, self.status_supervision)
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.status_supervision,
+                        remainder.strip(),
+                    )
                 if subcommand in {"完成", "结束", "done"}:
-                    return await self._emit_direct_command_result(event, self.complete_supervision)
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.complete_supervision,
+                        remainder.strip(),
+                    )
                 if subcommand in {"取消", "abort"}:
-                    return await self._emit_direct_command_result(event, self.cancel_supervision)
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.cancel_supervision,
+                        remainder.strip(),
+                    )
                 if subcommand in {"帮助", "help"}:
                     return await self._emit_direct_command_result(event, self.help_supervision)
                 event.set_result(MessageEventResult().message(self._supervision_help_text()).stop_event())
@@ -1411,14 +1423,6 @@ class WorkSupervisorPlugin(Star):
                         self._mark_task_status(conn, int(active_by_key["id"]), "expired", now)
                     continue
 
-                active_by_target = self._find_active_task_by_target(conn, parsed["target_user_id"])
-                if active_by_target and str(active_by_target.get("settings_task_key") or "") not in {"", task_key}:
-                    logger.warning(
-                        "WorkSupervisor settings task ignored: target %s already has an active task.",
-                        parsed["target_user_id"],
-                    )
-                    continue
-
                 if active_by_key:
                     todo_pick_count = (
                         parsed["todo_pick_count"]
@@ -1442,40 +1446,6 @@ class WorkSupervisorPlugin(Star):
                         cooldown_seconds=parsed["cooldown_seconds"],
                         reminder_limit=parsed["reminder_limit"],
                         todo_pick_count=todo_pick_count,
-                        now=now,
-                    )
-                    continue
-
-                if active_by_target and not str(active_by_target.get("settings_task_key") or ""):
-                    conn.execute(
-                        "UPDATE supervision_tasks SET settings_task_key = ?, updated_at = ? WHERE id = ?",
-                        (task_key, self._iso(now), int(active_by_target["id"])),
-                    )
-                    conn.commit()
-                    active_by_key = self._find_active_task_by_settings_key(conn, task_key)
-                    if active_by_key:
-                        todo_pick_count = (
-                            parsed["todo_pick_count"]
-                            if parsed["todo_pick_count"] is not None
-                            else int(active_by_key.get("todo_pick_count") or self._default_todo_pick_count())
-                        )
-                        self._update_active_task_from_settings(
-                            conn,
-                            int(active_by_key["id"]),
-                            target_user_id=parsed["target_user_id"],
-                            target_user_name=parsed["target_user_name"],
-                            trigger_session_id=parsed["trigger_session_id"],
-                            trigger_group_id=parsed["trigger_group_id"],
-                            created_by_user_id=parsed["created_by_user_id"],
-                            created_by_user_name=parsed["created_by_user_name"],
-                            task_title=parsed["task_title"],
-                            todo_items=parsed["todo_items"],
-                            schedule_kind=parsed["schedule_kind"],
-                            start_at=parsed["start_at"],
-                            end_at=parsed["end_at"],
-                            cooldown_seconds=parsed["cooldown_seconds"],
-                            reminder_limit=parsed["reminder_limit"],
-                            todo_pick_count=todo_pick_count,
                             now=now,
                         )
                     continue
@@ -1671,22 +1641,23 @@ class WorkSupervisorPlugin(Star):
             self._sync_broadcast_jobs_from_config_sync(force=force)
 
     # ---- 数据访问 ----
-    def _find_active_task_by_target(
+    def _list_active_tasks_by_target(
         self,
         conn: sqlite3.Connection,
         target_user_id: str,
-    ) -> dict[str, Any] | None:
-        row = conn.execute(
-            """
-            SELECT *
-            FROM supervision_tasks
-            WHERE target_user_id = ? AND status = 'active'
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (target_user_id,),
-        ).fetchone()
-        return dict(row) if row else None
+    ) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM supervision_tasks
+                WHERE target_user_id = ? AND status = 'active'
+                ORDER BY id DESC
+                """,
+                (target_user_id,),
+            ).fetchall()
+        ]
 
     def _find_active_task_for_session(
         self,
@@ -1725,14 +1696,14 @@ class WorkSupervisorPlugin(Star):
         # Group supervision stays pinned to the originating group.
         return True
 
-    def _find_active_task_for_event(
+    def _list_active_tasks_for_event(
         self,
         conn: sqlite3.Connection,
         target_user_id: str,
         *,
         session_id: str,
         group_id: str,
-    ) -> dict[str, Any] | None:
+    ) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT *
@@ -1742,6 +1713,7 @@ class WorkSupervisorPlugin(Star):
             """,
             (target_user_id,),
         ).fetchall()
+        tasks: list[dict[str, Any]] = []
         for row in rows:
             task = dict(row)
             if self._task_matches_event_scope(
@@ -1749,8 +1721,27 @@ class WorkSupervisorPlugin(Star):
                 session_id=session_id,
                 group_id=group_id,
             ):
-                return task
-        return None
+                tasks.append(task)
+        return tasks
+
+    def _pick_due_task_for_event(
+        self,
+        conn: sqlite3.Connection,
+        tasks: list[dict[str, Any]],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        due_tasks = [task for task in tasks if self._reminder_due(conn, task, now)]
+        if not due_tasks:
+            return None
+
+        def sort_key(task: dict[str, Any]) -> tuple[float, float, int]:
+            last_reminded_at = self._parse_dt(task.get("last_reminded_at"))
+            cycle_end = self._task_cycle_end(task, now)
+            last_ts = last_reminded_at.timestamp() if last_reminded_at else -1.0
+            end_ts = cycle_end.timestamp() if cycle_end else float("inf")
+            return (last_ts, end_ts, int(task.get("id") or 0))
+
+        return sorted(due_tasks, key=sort_key)[0]
 
     def _find_task_by_id(
         self,
@@ -2082,6 +2073,120 @@ class WorkSupervisorPlugin(Star):
             lines.extend(f"{index}. {item}" for index, item in enumerate(parsed["todos"], start=1))
         return "\n".join(lines)
 
+    def _parse_task_selector(self, payload: str) -> dict[str, Any]:
+        text = self._clean_payload_after_mentions(payload)
+        if not text:
+            return {}
+
+        normalized = self._normalize_command_text(text)
+        if normalized.startswith("#") and normalized[1:].isdigit():
+            return {"id": int(normalized[1:])}
+
+        _, fields = self._extract_key_value_fields(
+            text,
+            {
+                "任务": "title",
+                "标题": "title",
+                "task": "title",
+                "title": "title",
+                "id": "id",
+                "任务id": "id",
+                "task_id": "id",
+            },
+        )
+        if "id" in fields:
+            raw_id = str(fields["id"]).strip()
+            if raw_id.isdigit():
+                return {"id": int(raw_id)}
+        if "title" in fields:
+            title = self._normalize_command_text(fields["title"])
+            if title:
+                return {"title": title}
+        return {"title": normalized}
+
+    def _task_matches_selector(
+        self,
+        task: dict[str, Any],
+        selector: dict[str, Any],
+    ) -> bool:
+        if not selector:
+            return True
+        if "id" in selector:
+            return int(task.get("id") or 0) == int(selector["id"])
+        title = self._normalize_command_text(selector.get("title", ""))
+        if not title:
+            return True
+        return self._normalize_command_text(task.get("task_title") or "") == title
+
+    def _render_task_brief_line(
+        self,
+        task: dict[str, Any],
+        now: datetime,
+        *,
+        index: int | None = None,
+    ) -> str:
+        prefix = f"{index}. " if index is not None else ""
+        task_id = int(task.get("id") or 0)
+        title = str(task.get("task_title") or "未命名任务")
+        schedule_kind = self._normalize_schedule_kind(task.get("schedule_kind"))
+        end_at = self._task_cycle_end(task, now)
+        interval_text = self._format_duration_seconds(int(task.get("cooldown_seconds") or 0))
+        if schedule_kind == "permanent":
+            remaining_text = "永久"
+        elif schedule_kind == "daily":
+            remaining_text = self._format_remaining(end_at, now).replace("剩余时间：", "", 1) if end_at else "每天重复"
+        else:
+            remaining_text = self._format_remaining(end_at, now).replace("剩余时间：", "", 1) if end_at else "未设置结束"
+        return f"{prefix}#{task_id}《{title}》｜{remaining_text}｜间隔 {interval_text}"
+
+    def _render_task_selector_hint(
+        self,
+        tasks: list[dict[str, Any]],
+        now: datetime,
+        *,
+        header: str,
+        action_text: str,
+    ) -> str:
+        lines = [header]
+        lines.extend(
+            self._render_task_brief_line(task, now, index=index)
+            for index, task in enumerate(tasks, start=1)
+        )
+        lines.append(action_text)
+        return "\n".join(lines)
+
+    def _select_task_from_active_tasks(
+        self,
+        tasks: list[dict[str, Any]],
+        selector: dict[str, Any],
+        now: datetime,
+        *,
+        action_name: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        if not tasks:
+            return None, None
+        if not selector:
+            if len(tasks) == 1:
+                return tasks[0], None
+            return None, self._render_task_selector_hint(
+                tasks,
+                now,
+                header=f"当前共有 {len(tasks)} 个进行中的监督任务，请指定要{action_name}的任务：",
+                action_text=f"可用：监督 {action_name} #任务ID 或 监督 {action_name} 任务=任务名",
+            )
+
+        matched = [task for task in tasks if self._task_matches_selector(task, selector)]
+        if not matched:
+            return None, "没有找到匹配的监督任务。"
+        if len(matched) == 1:
+            return matched[0], None
+        return None, self._render_task_selector_hint(
+            matched,
+            now,
+            header=f"找到了多个可{action_name}的同名任务，请改用 #任务ID：",
+            action_text=f"可用：监督 {action_name} #任务ID",
+        )
+
     async def _create_supervision_result(
         self,
         event: AstrMessageEvent,
@@ -2100,10 +2205,6 @@ class WorkSupervisorPlugin(Star):
         now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
-                active_task = self._find_active_task_by_target(conn, target_user_id)
-                if active_task:
-                    return f"{target_user_name} 当前已经有一个进行中的监督任务：{active_task['task_title']}"
-
                 settings_task_key = self._new_settings_task_key(
                     "cmd",
                     target_user_id,
@@ -2139,50 +2240,110 @@ class WorkSupervisorPlugin(Star):
         event: AstrMessageEvent,
         *,
         target_user_id: str,
+        task_selector: dict[str, Any],
     ) -> str:
         await self._sync_settings_tasks_from_config()
         await self._ensure_scheduler_started()
         await self._expire_overdue_tasks()
 
+        now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
-                task = self._find_active_task_by_target(conn, target_user_id)
+                tasks = self._list_active_tasks_by_target(conn, target_user_id)
+                task, selection_error = self._select_task_from_active_tasks(
+                    tasks,
+                    task_selector,
+                    now,
+                    action_name="状态",
+                )
                 if task is not None:
                     since = None
                     if self._normalize_schedule_kind(task.get("schedule_kind")) == "daily":
-                        since = self._task_cycle_start(task, self._now())
+                        since = self._task_cycle_start(task, now)
                     task["_reminder_sent"] = self._count_task_reminders(
                         conn,
                         int(task["id"]),
                         since=since,
                     )
 
-        if task is None:
+        if not tasks:
             return "当前没有进行中的监督任务。"
-        return self._render_task_status(task, self._now())
+        if task is not None:
+            return self._render_task_status(task, now)
+        if selection_error:
+            return selection_error
+        return self._render_task_selector_hint(
+            tasks,
+            now,
+            header=f"当前共有 {len(tasks)} 个进行中的监督任务：",
+            action_text="查看详情：监督 状态 #任务ID 或 监督 状态 任务=任务名",
+        )
 
     async def _complete_supervision_result(
         self,
         event: AstrMessageEvent,
         *,
         target_user_id: str,
+        task_selector: dict[str, Any],
     ) -> str | None:
         await self._sync_settings_tasks_from_config()
         await self._ensure_scheduler_started()
         await self._expire_overdue_tasks()
 
         sender_id = str(event.get_sender_id() or "").strip()
+        now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
-                task = self._find_active_task_by_target(conn, target_user_id)
-                if task is None:
+                tasks = self._list_active_tasks_by_target(conn, target_user_id)
+                if not tasks:
                     return "没有找到进行中的监督任务。"
+                task, selection_error = self._select_task_from_active_tasks(
+                    tasks,
+                    task_selector,
+                    now,
+                    action_name="完成",
+                )
+                if task is None:
+                    return selection_error
                 if sender_id not in {str(task["target_user_id"]), str(task["created_by_user_id"])} and not self._is_admin(event):
                     return "只有目标本人、任务创建者或管理员可以结束这个监督任务。"
-                self._mark_task_status(conn, int(task["id"]), "completed", self._now())
+                self._mark_task_status(conn, int(task["id"]), "completed", now)
                 self._sync_active_tasks_to_settings_sync(conn)
 
         return f"已结束监督：{task['target_user_name']} 的《{task['task_title']}》"
+
+    async def _cancel_supervision_result(
+        self,
+        event: AstrMessageEvent,
+        *,
+        target_user_id: str,
+        task_selector: dict[str, Any],
+    ) -> str:
+        await self._sync_settings_tasks_from_config()
+        await self._ensure_scheduler_started()
+        await self._expire_overdue_tasks()
+
+        sender_id = str(event.get_sender_id() or "").strip()
+        now = self._now()
+        async with self._db_lock:
+            with self._connect() as conn:
+                tasks = self._list_active_tasks_by_target(conn, target_user_id)
+                if not tasks:
+                    return "没有找到进行中的监督任务。"
+                task, selection_error = self._select_task_from_active_tasks(
+                    tasks,
+                    task_selector,
+                    now,
+                    action_name="取消",
+                )
+                if task is None:
+                    return selection_error or "没有找到进行中的监督任务。"
+                if sender_id not in {str(task["target_user_id"]), str(task["created_by_user_id"])} and not self._is_admin(event):
+                    return "只有目标本人、任务创建者或管理员可以取消这个监督任务。"
+                self._mark_task_status(conn, int(task["id"]), "cancelled", now)
+                self._sync_active_tasks_to_settings_sync(conn)
+
+        return f"已取消监督：{task['target_user_name']} 的《{task['task_title']}》"
 
     # ---- LLM 催促 ----
     async def _get_active_persona_prompt(self, umo: str) -> str:
@@ -2575,14 +2736,21 @@ class WorkSupervisorPlugin(Star):
         now = self._now()
         async with self._db_lock:
             with self._connect() as conn:
-                task = self._find_active_task_for_event(
+                tasks = [
+                    task
+                    for task in self._list_active_tasks_for_event(
+                        conn,
+                        sender_id,
+                        session_id=session_id,
+                        group_id=group_id,
+                    )
+                    if int(task.get("id") or 0) not in self._inflight_task_ids
+                ]
+                task = self._pick_due_task_for_event(
                     conn,
-                    sender_id,
-                    session_id=session_id,
-                    group_id=group_id,
+                    tasks,
+                    now,
                 )
-                if task and not self._reminder_due(conn, task, now):
-                    task = None
 
         if not task:
             return
@@ -2683,14 +2851,28 @@ class WorkSupervisorPlugin(Star):
     async def status_supervision(
         self,
         event: AstrMessageEvent,
+        payload: GreedyStr = "",
     ) -> AsyncGenerator[MessageEventResult, None]:
         event.should_call_llm(False)
 
         mentions = self._extract_mentions(event)
         target_user_id = mentions[0]["user_id"] if mentions else str(event.get_sender_id() or "").strip()
+        cleaned_payload = self._clean_payload_after_mentions(
+            self._resolve_command_payload(
+                event,
+                payload,
+                "监督 状态",
+                "监督 查看",
+                "监督 查询",
+                "督工 状态",
+                "督工 查看",
+                "督工 查询",
+            )
+        )
         result = await self._status_supervision_result(
             event,
             target_user_id=target_user_id,
+            task_selector=self._parse_task_selector(cleaned_payload),
         )
         yield event.plain_result(result)
 
@@ -2698,15 +2880,29 @@ class WorkSupervisorPlugin(Star):
     async def complete_supervision(
         self,
         event: AstrMessageEvent,
+        payload: GreedyStr = "",
     ) -> AsyncGenerator[MessageEventResult, None]:
         event.should_call_llm(False)
 
         sender_id = str(event.get_sender_id() or "").strip()
         mentions = self._extract_mentions(event)
         target_user_id = mentions[0]["user_id"] if mentions else sender_id
+        cleaned_payload = self._clean_payload_after_mentions(
+            self._resolve_command_payload(
+                event,
+                payload,
+                "监督 完成",
+                "监督 结束",
+                "监督 done",
+                "督工 完成",
+                "督工 结束",
+                "督工 done",
+            )
+        )
         result = await self._complete_supervision_result(
             event,
             target_user_id=target_user_id,
+            task_selector=self._parse_task_selector(cleaned_payload),
         )
         if result is None:
             return
@@ -2716,29 +2912,29 @@ class WorkSupervisorPlugin(Star):
     async def cancel_supervision(
         self,
         event: AstrMessageEvent,
+        payload: GreedyStr = "",
     ) -> AsyncGenerator[MessageEventResult, None]:
         event.should_call_llm(False)
-        await self._sync_settings_tasks_from_config()
-        await self._ensure_scheduler_started()
-        await self._expire_overdue_tasks()
 
         sender_id = str(event.get_sender_id() or "").strip()
         mentions = self._extract_mentions(event)
         target_user_id = mentions[0]["user_id"] if mentions else sender_id
-
-        async with self._db_lock:
-            with self._connect() as conn:
-                task = self._find_active_task_by_target(conn, target_user_id)
-                if task is None:
-                    yield event.plain_result("没有找到进行中的监督任务。")
-                    return
-                if sender_id not in {str(task["target_user_id"]), str(task["created_by_user_id"])} and not self._is_admin(event):
-                    yield event.plain_result("只有目标本人、任务创建者或管理员可以取消这个监督任务。")
-                    return
-                self._mark_task_status(conn, int(task["id"]), "cancelled", self._now())
-                self._sync_active_tasks_to_settings_sync(conn)
-
-        yield event.plain_result(f"已取消监督：{task['target_user_name']} 的《{task['task_title']}》")
+        cleaned_payload = self._clean_payload_after_mentions(
+            self._resolve_command_payload(
+                event,
+                payload,
+                "监督 取消",
+                "监督 abort",
+                "督工 取消",
+                "督工 abort",
+            )
+        )
+        result = await self._cancel_supervision_result(
+            event,
+            target_user_id=target_user_id,
+            task_selector=self._parse_task_selector(cleaned_payload),
+        )
+        yield event.plain_result(result)
 
     @supervisor.command("帮助", alias={"help"})
     async def help_supervision(
