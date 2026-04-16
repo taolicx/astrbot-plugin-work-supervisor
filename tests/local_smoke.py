@@ -281,7 +281,7 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("self_start")
-        plugin.config["normal_chat_yield_prefixes"] = "/\n！"
+        plugin.config["normal_chat_yield_prefixes"] = ["/", "！"]
 
         mention_bot_event = FakeEvent(
             sender_id="u100",

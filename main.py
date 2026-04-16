@@ -48,7 +48,7 @@ DEFAULT_NORMAL_CHAT_YIELD_PREFIXES = ("/", "／")
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.7",
+    "0.1.8",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):

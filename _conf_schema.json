@@ -189,9 +189,15 @@
   },
   "normal_chat_yield_prefixes": {
     "description": "正常对话让路前缀",
-    "type": "text",
-    "hint": "每行一个前缀。目标用户发消息时，如果文本以这些前缀开头，监督插件会让给 AstrBot 正常对话或命令处理。默认是 / 和 ／。例如可再加上 ！。",
-    "default": "/\n／"
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "hint": "一次添加一个前缀。目标用户发消息时，如果文本以这些前缀开头，监督插件会让给 AstrBot 正常对话或命令处理。默认是 / 和 ／，你也可以再加上 ！。",
+    "default": [
+      "/",
+      "／"
+    ]
   },
   "llm_enabled": {
     "description": "启用大模型生成催促文案",
