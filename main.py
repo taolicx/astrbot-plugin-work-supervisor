@@ -46,7 +46,7 @@ SKIP_COMMAND_PREFIXES = (
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.4",
+    "0.1.5",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -578,6 +578,7 @@ class WorkSupervisorPlugin(Star):
             try:
                 await self._sync_settings_tasks_from_config()
                 await self._expire_overdue_tasks()
+                await self._run_due_settings_initial_reminders()
                 await self._run_due_broadcasts()
             except asyncio.CancelledError:
                 raise
@@ -655,6 +656,94 @@ class WorkSupervisorPlugin(Star):
                         (self._iso(now), self._iso(now), kind),
                     )
                     conn.commit()
+
+    def _is_settings_seeded_task(self, task: dict[str, Any]) -> bool:
+        return self._normalize_settings_task_key(task.get("settings_task_key")).startswith("cfg-")
+
+    def _settings_task_due_initial_push(
+        self,
+        conn: sqlite3.Connection,
+        task: dict[str, Any],
+        now: datetime,
+    ) -> bool:
+        if str(task.get("status") or "") != "active":
+            return False
+        if not self._is_settings_seeded_task(task):
+            return False
+        if not str(task.get("trigger_session_id") or "").strip():
+            return False
+        start_at = self._parse_dt(task.get("start_at"))
+        if start_at and start_at > now:
+            return False
+        if self._task_reminder_count_exhausted(conn, task, now):
+            return False
+
+        last_reminded_at = self._parse_dt(task.get("last_reminded_at"))
+        if last_reminded_at is None:
+            return True
+
+        if self._normalize_schedule_kind(task.get("schedule_kind")) != "daily":
+            return False
+        cycle_start = self._task_cycle_start(task, now)
+        return bool(cycle_start and last_reminded_at < cycle_start)
+
+    def _build_reminder_message_chain(
+        self,
+        task: dict[str, Any],
+        reminder_text: str,
+    ) -> MessageChain:
+        message_chain = MessageChain()
+        session_id = str(task.get("trigger_session_id") or "").strip()
+        if ":GroupMessage:" in session_id or str(task.get("trigger_group_id") or "").strip():
+            message_chain.at(
+                name=str(task.get("target_user_name") or task.get("target_user_id") or "用户"),
+                qq=str(task.get("target_user_id") or ""),
+            ).message(" ")
+        message_chain.message(reminder_text)
+        return message_chain
+
+    async def _run_due_settings_initial_reminders(self) -> None:
+        now = self._now()
+        async with self._db_lock:
+            with self._connect() as conn:
+                tasks = [
+                    task
+                    for task in self._list_active_tasks(conn)
+                    if self._settings_task_due_initial_push(conn, task, now)
+                ]
+
+        for task in tasks:
+            selected_todos = self._pick_todos(task)
+            session_id = str(task.get("trigger_session_id") or "").strip()
+            if not session_id:
+                continue
+            reminder_text = await self._build_reminder_text_for_session(
+                task,
+                selected_todos,
+                session_id,
+            )
+            try:
+                await self.context.send_message(
+                    session_id,
+                    self._build_reminder_message_chain(task, reminder_text),
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"WorkSupervisor failed to send settings initial reminder: {exc}",
+                    exc_info=True,
+                )
+                continue
+
+            async with self._db_lock:
+                with self._connect() as conn:
+                    self._touch_reminder_record(
+                        conn,
+                        int(task["id"]),
+                        reminder_text=reminder_text,
+                        target_user_id=str(task.get("target_user_id") or ""),
+                        trigger_session_id=session_id,
+                        now=now,
+                    )
 
     # ---- 指令解析 ----
     def _clean_payload_after_mentions(self, payload: str) -> str:
@@ -1517,16 +1606,17 @@ class WorkSupervisorPlugin(Star):
         )
         conn.commit()
 
-    def _touch_reminder(
+    def _touch_reminder_record(
         self,
         conn: sqlite3.Connection,
         task_id: int,
+        *,
         reminder_text: str,
-        event: AstrMessageEvent,
+        target_user_id: str,
+        trigger_session_id: str,
         now: datetime,
     ) -> None:
         now_iso = self._iso(now)
-        target_user_id = str(event.get_sender_id() or "").strip()
         conn.execute(
             "UPDATE supervision_tasks SET last_reminded_at = ?, updated_at = ? WHERE id = ?",
             (now_iso, now_iso, task_id),
@@ -1539,12 +1629,29 @@ class WorkSupervisorPlugin(Star):
             (
                 task_id,
                 target_user_id,
-                event.unified_msg_origin,
+                trigger_session_id,
                 reminder_text,
                 now_iso,
             ),
         )
         conn.commit()
+
+    def _touch_reminder(
+        self,
+        conn: sqlite3.Connection,
+        task_id: int,
+        reminder_text: str,
+        event: AstrMessageEvent,
+        now: datetime,
+    ) -> None:
+        self._touch_reminder_record(
+            conn,
+            task_id,
+            reminder_text=reminder_text,
+            target_user_id=str(event.get_sender_id() or "").strip(),
+            trigger_session_id=str(event.unified_msg_origin or "").strip(),
+            now=now,
+        )
 
     def _upsert_broadcast_job(
         self,
@@ -1862,18 +1969,18 @@ class WorkSupervisorPlugin(Star):
             merged = merged[: self._llm_max_output_chars()].rstrip() + "…"
         return merged
 
-    async def _build_reminder_text(
+    async def _build_reminder_text_for_session(
         self,
         task: dict[str, Any],
         todos: list[str],
-        event: AstrMessageEvent,
+        umo: str,
     ) -> str:
         now = self._now()
         fallback = self._build_fallback_reminder_text(task, todos, now)
         if not self._llm_enabled():
             return fallback
 
-        provider = self._resolve_provider(event.unified_msg_origin)
+        provider = self._resolve_provider(umo)
         if provider is None:
             return fallback
 
@@ -1893,7 +2000,7 @@ class WorkSupervisorPlugin(Star):
 
         try:
             response = await provider.text_chat(
-                system_prompt=await self._build_llm_system_prompt(event.unified_msg_origin),
+                system_prompt=await self._build_llm_system_prompt(umo),
                 prompt="\n".join(prompt_lines),
             )
             text = self._sanitize_llm_text(
@@ -1906,6 +2013,18 @@ class WorkSupervisorPlugin(Star):
                 exc_info=True,
             )
             return fallback
+
+    async def _build_reminder_text(
+        self,
+        task: dict[str, Any],
+        todos: list[str],
+        event: AstrMessageEvent,
+    ) -> str:
+        return await self._build_reminder_text_for_session(
+            task,
+            todos,
+            str(event.unified_msg_origin or ""),
+        )
 
     # ---- 监督提醒 ----
     def _pick_todos(self, task: dict[str, Any]) -> list[str]:

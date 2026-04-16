@@ -357,6 +357,12 @@ async def run_smoke_test() -> list[str]:
         )
         passed.append("settings_task_import")
 
+        await plugin._run_due_settings_initial_reminders()
+        assert len(context.sent_messages) == 1
+        assert context.sent_messages[0]["session"] == "aiocqhttp:FriendMessage:u300"
+        context.sent_messages.clear()
+        passed.append("settings_task_initial_push")
+
         config_done = await collect_results(plugin.complete_supervision(config_event))
         assert config_done and "设置页任务" in config_done[0]
         assert not any(
