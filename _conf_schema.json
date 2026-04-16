@@ -187,6 +187,12 @@
     "hint": "当 LLM 不可用时使用。支持占位符：{name} {task} {todos} {remaining} {deadline} {creator}。每行一个模板。",
     "default": "{name}，别摸了，`{task}` 还挂着。先去把这些做掉：{todos}。{remaining}\n{name}，现在不是装死的时候。`{task}` 还没完，先处理：{todos}。{remaining}"
   },
+  "normal_chat_yield_prefixes": {
+    "description": "正常对话让路前缀",
+    "type": "text",
+    "hint": "每行一个前缀。目标用户发消息时，如果文本以这些前缀开头，监督插件会让给 AstrBot 正常对话或命令处理。默认是 / 和 ／。例如可再加上 ！。",
+    "default": "/\n／"
+  },
   "llm_enabled": {
     "description": "启用大模型生成催促文案",
     "type": "bool",

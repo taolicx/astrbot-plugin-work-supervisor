@@ -42,13 +42,13 @@ SKIP_COMMAND_PREFIXES = (
     "/内容预告",
 )
 
-GENERIC_WAKE_PREFIXES = ("/", "／")
+DEFAULT_NORMAL_CHAT_YIELD_PREFIXES = ("/", "／")
 
 @register(
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.6",
+    "0.1.7",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -179,6 +179,13 @@ class WorkSupervisorPlugin(Star):
             self.config.get("fallback_reminder_templates", "")
         )
         return configured or DEFAULT_REMINDER_TEMPLATES
+
+    def _normal_chat_yield_prefixes(self) -> list[str]:
+        configured = self._parse_multiline_list(
+            self.config.get("normal_chat_yield_prefixes", "")
+        )
+        cleaned = [item for item in configured if item]
+        return cleaned or list(DEFAULT_NORMAL_CHAT_YIELD_PREFIXES)
 
     def _settings_tasks_config(self) -> list[dict[str, Any]]:
         value = self.config.get("settings_tasks", [])
@@ -553,7 +560,10 @@ class WorkSupervisorPlugin(Star):
         if self._message_mentions_self(event):
             return True
         normalized = self._normalize_command_text(plain_text)
-        return normalized.startswith(GENERIC_WAKE_PREFIXES)
+        return any(
+            normalized.startswith(prefix)
+            for prefix in self._normal_chat_yield_prefixes()
+        )
 
     def _normalize_command_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "").strip())

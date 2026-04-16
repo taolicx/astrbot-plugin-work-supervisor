@@ -281,6 +281,7 @@ async def run_smoke_test() -> list[str]:
             for item in plugin.config.get("settings_tasks", [])
         )
         passed.append("self_start")
+        plugin.config["normal_chat_yield_prefixes"] = "/\n！"
 
         mention_bot_event = FakeEvent(
             sender_id="u100",
@@ -310,6 +311,20 @@ async def run_smoke_test() -> list[str]:
         assert slash_command_event.call_llm is True
         assert slash_command_event.stopped is False
         passed.append("slash_command_yields_to_normal_chat")
+
+        fullwidth_bang_event = FakeEvent(
+            sender_id="u100",
+            sender_name="Alice",
+            unified_msg_origin="aiocqhttp:FriendMessage:u100",
+            message_str="！今天安排一下",
+            messages=[Plain("！今天安排一下")],
+            private=True,
+        )
+        await plugin.on_message(fullwidth_bang_event)
+        assert len(fullwidth_bang_event.sent_messages) == 0
+        assert fullwidth_bang_event.call_llm is True
+        assert fullwidth_bang_event.stopped is False
+        passed.append("custom_yield_prefix")
 
         self_status = await collect_results(plugin.status_supervision(self_event))
         assert self_status and "写第一章" in self_status[0] and "active" in self_status[0]
