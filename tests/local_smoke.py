@@ -262,6 +262,63 @@ async def run_smoke_test() -> list[str]:
         assert plugin._skip_message_for_commands("督工 状态")
         passed.append("command_prefix_aliases")
 
+        direct_help_event = FakeEvent(
+            sender_id="u130",
+            sender_name="HelpUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u130",
+            message_str="监督",
+            messages=[Plain("监督")],
+            private=True,
+        )
+        await plugin.on_message(direct_help_event)
+        assert len(direct_help_event.sent_messages) == 1
+        assert "监督命令" in plain_text_of(direct_help_event.sent_messages[0])
+        assert direct_help_event.call_llm is False
+        assert direct_help_event.stopped is True
+        passed.append("direct_help_command")
+
+        direct_private_start_event = FakeEvent(
+            sender_id="u131",
+            sender_name="DirectUser",
+            unified_msg_origin="aiocqhttp:FriendMessage:u131",
+            message_str="监督 开始 @DirectUser 任务=写周报 待办=整理数据、写摘要 时长=2h 冷却=1h",
+            messages=[
+                Plain("监督 开始 "),
+                At(name="DirectUser", qq="u131"),
+                Plain(" 任务=写周报 待办=整理数据、写摘要 时长=2h 冷却=1h"),
+            ],
+            private=True,
+        )
+        await plugin.on_message(direct_private_start_event)
+        assert len(direct_private_start_event.sent_messages) == 1
+        assert "已开始监督" in plain_text_of(direct_private_start_event.sent_messages[0])
+        assert "写周报" in plain_text_of(direct_private_start_event.sent_messages[0])
+        assert direct_private_start_event.call_llm is False
+        assert direct_private_start_event.stopped is True
+        passed.append("direct_private_start_command")
+
+        direct_at_bot_start_event = FakeEvent(
+            sender_id="u132",
+            sender_name="AtBotUser",
+            unified_msg_origin="aiocqhttp:GroupMessage:g132",
+            message_str="@bot 监督 开始 @AtBotUser 任务=做海报 待办=出图、排版 时长=2h 冷却=1h",
+            messages=[
+                At(name="SupervisorBot", qq="bot"),
+                Plain(" 监督 开始 "),
+                At(name="AtBotUser", qq="u132"),
+                Plain(" 任务=做海报 待办=出图、排版 时长=2h 冷却=1h"),
+            ],
+            group_id="g132",
+            private=False,
+        )
+        await plugin.on_message(direct_at_bot_start_event)
+        assert len(direct_at_bot_start_event.sent_messages) == 1
+        assert "已开始监督" in plain_text_of(direct_at_bot_start_event.sent_messages[0])
+        assert "做海报" in plain_text_of(direct_at_bot_start_event.sent_messages[0])
+        assert direct_at_bot_start_event.call_llm is False
+        assert direct_at_bot_start_event.stopped is True
+        passed.append("direct_at_bot_start_command")
+
         self_event = FakeEvent(
             sender_id="u100",
             sender_name="Alice",

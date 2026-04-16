@@ -48,7 +48,7 @@ DEFAULT_NORMAL_CHAT_YIELD_PREFIXES = ("/", "／")
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.9",
+    "0.1.10",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -621,6 +621,127 @@ class WorkSupervisorPlugin(Star):
         if matched:
             return stripped_text
         return str(payload or "").strip()
+
+    def _supervision_help_text(self) -> str:
+        return (
+            "监督命令：\n"
+            "监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
+            "监督 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h\n"
+            "监督 状态 [@目标]\n"
+            "监督 完成 [@目标]\n"
+            "监督 取消 [@目标]\n\n"
+            "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=提醒间隔；抽取=每次提醒展示几条待办。\n\n"
+            "播报命令：\n"
+            "更新内容 设置 时间=21:00 内容=今天更新了第一章和封面\n"
+            "内容预告 设置 时间=20:00 内容=明天预告第二章和设定图\n"
+            "更新内容 状态 / 更新内容 开 / 更新内容 关 / 更新内容 立即发送\n"
+            "内容预告 状态 / 内容预告 开 / 内容预告 关 / 内容预告 立即发送\n\n"
+            "提醒逻辑：目标用户在原会话中发言时，如果超过提醒间隔，就会触发一次监督提醒。"
+        )
+
+    def _strip_explicit_command_root(
+        self,
+        text: str,
+        *roots: str,
+    ) -> str | None:
+        normalized = self._normalize_command_text(text)
+        for root in roots:
+            candidate = self._normalize_command_text(root)
+            if not candidate:
+                continue
+            if normalized == candidate:
+                return ""
+            if normalized.startswith(f"{candidate} "):
+                return normalized[len(candidate) :].strip()
+        return None
+
+    async def _emit_direct_command_result(
+        self,
+        event: AstrMessageEvent,
+        command_call,
+        *args: Any,
+    ) -> bool:
+        last_result: MessageEventResult | None = None
+        async for item in command_call(event, *args):
+            last_result = item
+        if last_result is None:
+            return False
+        event.set_result(last_result.stop_event())
+        return True
+
+    async def _maybe_handle_explicit_command(self, event: AstrMessageEvent) -> bool:
+        # Keep an explicit command fallback in the message hook so plugin commands
+        # still work when AstrBot wake-prefix parsing leaves handlers with empty or
+        # truncated payloads.
+        normalized_text = self._normalize_command_text(self._extract_plain_text(event))
+        if not normalized_text:
+            return False
+
+        supervision_tail = self._strip_explicit_command_root(normalized_text, "监督", "督工")
+        if supervision_tail is not None:
+            if not supervision_tail:
+                return await self._emit_direct_command_result(event, self.help_supervision)
+            subcommand, _, remainder = supervision_tail.partition(" ")
+            if subcommand in {"开始", "创建", "新增"}:
+                return await self._emit_direct_command_result(
+                    event,
+                    self.start_supervision,
+                    remainder.strip(),
+                )
+            if subcommand in {"状态", "查看", "查询"}:
+                return await self._emit_direct_command_result(event, self.status_supervision)
+            if subcommand in {"完成", "结束", "done"}:
+                return await self._emit_direct_command_result(event, self.complete_supervision)
+            if subcommand in {"取消", "abort"}:
+                return await self._emit_direct_command_result(event, self.cancel_supervision)
+            if subcommand in {"帮助", "help"}:
+                return await self._emit_direct_command_result(event, self.help_supervision)
+            event.set_result(MessageEventResult().message(self._supervision_help_text()).stop_event())
+            return True
+
+        update_tail = self._strip_explicit_command_root(normalized_text, "更新内容")
+        if update_tail is not None:
+            if not update_tail:
+                return await self._emit_direct_command_result(event, self.update_status)
+            subcommand, _, remainder = update_tail.partition(" ")
+            if subcommand in {"设置", "设定"}:
+                return await self._emit_direct_command_result(event, self.update_set, remainder.strip())
+            if subcommand == "开":
+                return await self._emit_direct_command_result(event, self.update_on)
+            if subcommand == "关":
+                return await self._emit_direct_command_result(event, self.update_off)
+            if subcommand == "状态":
+                return await self._emit_direct_command_result(event, self.update_status)
+            if subcommand in {"立即发送", "发送"}:
+                return await self._emit_direct_command_result(
+                    event,
+                    self.update_send_now,
+                    remainder.strip(),
+                )
+            return await self._emit_direct_command_result(event, self.update_status)
+
+        preview_tail = self._strip_explicit_command_root(normalized_text, "内容预告")
+        if preview_tail is not None:
+            if not preview_tail:
+                return await self._emit_direct_command_result(event, self.preview_status)
+            subcommand, _, remainder = preview_tail.partition(" ")
+            if subcommand in {"设置", "设定"}:
+                return await self._emit_direct_command_result(event, self.preview_set, remainder.strip())
+            if subcommand == "开":
+                return await self._emit_direct_command_result(event, self.preview_on)
+            if subcommand == "关":
+                return await self._emit_direct_command_result(event, self.preview_off)
+            if subcommand == "状态":
+                return await self._emit_direct_command_result(event, self.preview_status)
+            if subcommand in {"立即发送", "发送"}:
+                return await self._emit_direct_command_result(
+                    event,
+                    self.preview_send_now,
+                    remainder.strip(),
+                )
+            return await self._emit_direct_command_result(event, self.preview_status)
+
+        return False
 
     # ---- 调度器 ----
     async def _ensure_scheduler_started(self) -> None:
@@ -2478,6 +2599,8 @@ class WorkSupervisorPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=1000)
     async def on_message(self, event: AstrMessageEvent) -> None:
+        if await self._maybe_handle_explicit_command(event):
+            return
         await self._maybe_send_supervision_reminder(event)
 
     # ---- 监督命令 ----
@@ -2608,22 +2731,7 @@ class WorkSupervisorPlugin(Star):
         event: AstrMessageEvent,
     ) -> AsyncGenerator[MessageEventResult, None]:
         event.should_call_llm(False)
-        help_text = (
-            "监督命令：\n"
-            "监督 开始 任务=写第一章 待办=大纲、正文、校对 时长=3h 冷却=2h 抽取=3\n"
-            "监督 开始 @小明 任务=做海报 待办=出图、排版 时长=2h 冷却=1h\n"
-            "监督 状态 [@目标]\n"
-            "监督 完成 [@目标]\n"
-            "监督 取消 [@目标]\n\n"
-            "参数说明：任务=必填；待办=可选，用顿号或逗号分隔；时长=默认配置值；冷却=提醒间隔；抽取=每次提醒展示几条待办。\n\n"
-            "播报命令：\n"
-            "更新内容 设置 时间=21:00 内容=今天更新了第一章和封面\n"
-            "内容预告 设置 时间=20:00 内容=明天预告第二章和设定图\n"
-            "更新内容 状态 / 更新内容 开 / 更新内容 关 / 更新内容 立即发送\n"
-            "内容预告 状态 / 内容预告 开 / 内容预告 关 / 内容预告 立即发送\n\n"
-            "提醒逻辑：目标用户在原会话中发言时，如果超过提醒间隔，就会触发一次监督提醒。"
-        )
-        yield event.plain_result(help_text)
+        yield event.plain_result(self._supervision_help_text())
 
     # ---- 更新内容命令 ----
     @filter.command_group("更新内容")
