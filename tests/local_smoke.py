@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import importlib.util
@@ -236,6 +236,7 @@ async def run_smoke_test() -> list[str]:
                 "allow_supervise_others": True,
                 "allow_non_admin_supervise_others": False,
                 "settings_tasks": [],
+                "broadcast_settings": [],
                 "default_duration_minutes": 180,
                 "default_cooldown_minutes": 120,
                 "default_todo_pick_count": 3,
@@ -753,20 +754,65 @@ async def run_smoke_test() -> list[str]:
         )
         assert preview_set and now_hhmm in preview_set[0]
         passed.append("preview_set")
+        assert any(
+            item.get("__template_key") == "update_broadcast"
+            and item.get("time_hhmm") == now_hhmm
+            and item.get("session_id") == "aiocqhttp:FriendMessage:u100"
+            for item in plugin.config.get("broadcast_settings", [])
+        )
+        assert any(
+            item.get("__template_key") == "preview_broadcast"
+            and item.get("time_hhmm") == now_hhmm
+            and item.get("session_id") == "aiocqhttp:FriendMessage:u100"
+            for item in plugin.config.get("broadcast_settings", [])
+        )
+        passed.append("broadcast_command_sync")
 
         update_now = await collect_results(plugin.update_send_now(broadcast_event, ""))
         assert update_now and "已发送" in update_now[0]
         assert broadcast_event.sent_messages, "update_send_now did not send message"
         passed.append("update_send_now")
 
+        plugin.config["broadcast_settings"] = [
+            {
+                "__template_key": "update_broadcast",
+                "enabled": True,
+                "session_id": "aiocqhttp:FriendMessage:u500",
+                "session_label": "u500",
+                "time_hhmm": now_hhmm,
+                "content": "设置页更新内容",
+            },
+            {
+                "__template_key": "preview_broadcast",
+                "enabled": False,
+                "session_id": "aiocqhttp:GroupMessage:g500",
+                "session_label": "g500",
+                "time_hhmm": now_hhmm,
+                "content": "设置页内容预告",
+            },
+        ]
+        await plugin._sync_broadcast_jobs_from_config(force=True)
+        update_status_from_settings = await plugin._get_broadcast_status_text("update")
+        preview_status_from_settings = await plugin._get_broadcast_status_text("preview")
+        assert "u500" in update_status_from_settings and now_hhmm in update_status_from_settings
+        assert "g500" in preview_status_from_settings and "关闭" in preview_status_from_settings
+        passed.append("broadcast_settings_import")
+
         await plugin._run_due_broadcasts()
-        assert len(context.sent_messages) == 2
+        assert len(context.sent_messages) == 1
         sent_bodies = [" ".join(item["plain_texts"]) for item in context.sent_messages]
         assert any("[更新内容]" in body for body in sent_bodies)
-        assert any("[内容预告]" in body for body in sent_bodies)
-        assert any("今天更新了第一章" in body for body in sent_bodies)
-        assert any("明天预告第二章" in body for body in sent_bodies)
+        assert not any("[内容预告]" in body for body in sent_bodies)
+        assert any("设置页更新内容" in body for body in sent_bodies)
         passed.append("scheduled_broadcasts")
+
+        plugin.config["broadcast_settings"] = []
+        await plugin._sync_broadcast_jobs_from_config(force=True)
+        cleared_update_status = await plugin._get_broadcast_status_text("update")
+        cleared_preview_status = await plugin._get_broadcast_status_text("preview")
+        assert "还没有设置" in cleared_update_status
+        assert "还没有设置" in cleared_preview_status
+        passed.append("broadcast_settings_clear")
 
         return passed
     finally:

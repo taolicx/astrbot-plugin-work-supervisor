@@ -48,7 +48,7 @@ DEFAULT_NORMAL_CHAT_YIELD_PREFIXES = ("/", "／")
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.8",
+    "0.1.9",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -68,8 +68,10 @@ class WorkSupervisorPlugin(Star):
         self._scheduler_task: asyncio.Task[None] | None = None
         self._inflight_task_ids: set[int] = set()
         self._last_settings_tasks_signature = ""
+        self._last_broadcast_settings_signature = ""
         self._init_db()
         self._sync_settings_tasks_from_config_sync(force=True)
+        self._bootstrap_broadcast_jobs_sync()
 
     # ---- 配置解析 ----
     def _get_bool(self, key: str, default: bool) -> bool:
@@ -193,9 +195,23 @@ class WorkSupervisorPlugin(Star):
             return []
         return [dict(item) for item in value if isinstance(item, dict)]
 
+    def _broadcast_settings_config(self) -> list[dict[str, Any]]:
+        value = self.config.get("broadcast_settings", [])
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
     def _settings_tasks_signature(self) -> str:
         return json.dumps(
             self._settings_tasks_config(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _broadcast_settings_signature(self) -> str:
+        return json.dumps(
+            self._broadcast_settings_config(),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -616,6 +632,7 @@ class WorkSupervisorPlugin(Star):
         while True:
             try:
                 await self._sync_settings_tasks_from_config()
+                await self._sync_broadcast_jobs_from_config()
                 await self._expire_overdue_tasks()
                 await self._run_due_settings_initial_reminders()
                 await self._run_due_broadcasts()
@@ -1368,6 +1385,154 @@ class WorkSupervisorPlugin(Star):
         async with self._db_lock:
             with self._connect() as conn:
                 self._sync_active_tasks_to_settings_sync(conn)
+
+    def _broadcast_template_kind(self, template_key: Any) -> str:
+        normalized = self._normalize_command_text(template_key)
+        if normalized in {"update_broadcast", "update"}:
+            return "update"
+        if normalized in {"preview_broadcast", "preview"}:
+            return "preview"
+        return ""
+
+    def _parse_broadcast_settings_item(
+        self,
+        item: dict[str, Any],
+    ) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
+        kind = self._broadcast_template_kind(item.get("__template_key")) or self._normalize_command_text(
+            item.get("kind")
+        )
+        if kind not in {"update", "preview"}:
+            return None
+
+        time_hhmm = self._normalize_hhmm(str(item.get("time_hhmm") or item.get("time") or ""))
+        session_id = str(item.get("session_id") or "").strip()
+        session_label = str(item.get("session_label") or session_id).strip() or session_id
+        content = str(item.get("content") or "").strip()
+        enabled = self._get_bool_from_value(item.get("enabled"), True)
+        normalized_item = {
+            "__template_key": f"{kind}_broadcast",
+            "enabled": enabled,
+            "session_id": session_id,
+            "session_label": session_label,
+            "time_hhmm": time_hhmm,
+            "content": content,
+        }
+        parsed = {
+            "enabled": enabled,
+            "session_id": session_id,
+            "session_label": session_label,
+            "time_hhmm": time_hhmm,
+            "content": content,
+        }
+        return kind, parsed, normalized_item
+
+    def _broadcast_job_to_settings_item(self, row: dict[str, Any]) -> dict[str, Any]:
+        kind = str(row.get("kind") or "").strip() or "update"
+        session_id = str(row.get("session_id") or "").strip()
+        session_label = str(row.get("session_label") or session_id).strip() or session_id
+        return {
+            "__template_key": f"{kind}_broadcast",
+            "enabled": bool(int(row.get("enabled") or 0)),
+            "session_id": session_id,
+            "session_label": session_label,
+            "time_hhmm": self._normalize_hhmm(str(row.get("time_hhmm") or "")),
+            "content": str(row.get("content") or "").strip(),
+        }
+
+    def _list_broadcast_jobs(self, conn: sqlite3.Connection) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM broadcast_jobs
+                ORDER BY kind
+                """
+            ).fetchall()
+        ]
+
+    def _sync_broadcast_jobs_to_config_sync(self, conn: sqlite3.Connection) -> None:
+        rows = {str(row.get("kind") or ""): row for row in self._list_broadcast_jobs(conn)}
+        items: list[dict[str, Any]] = []
+        for kind in ("update", "preview"):
+            row = rows.get(kind)
+            if row is None:
+                continue
+            if not any(
+                str(row.get(field) or "").strip()
+                for field in ("session_id", "session_label", "time_hhmm", "content")
+            ):
+                continue
+            items.append(self._broadcast_job_to_settings_item(row))
+
+        if items == self._broadcast_settings_config():
+            self._last_broadcast_settings_signature = self._broadcast_settings_signature()
+            return
+        self._save_plugin_config({"broadcast_settings": items})
+        self._last_broadcast_settings_signature = self._broadcast_settings_signature()
+
+    def _delete_broadcast_job(self, conn: sqlite3.Connection, kind: str) -> None:
+        conn.execute("DELETE FROM broadcast_jobs WHERE kind = ?", (kind,))
+        conn.commit()
+
+    def _bootstrap_broadcast_jobs_sync(self) -> None:
+        if self._broadcast_settings_config():
+            self._sync_broadcast_jobs_from_config_sync(force=True)
+            return
+        with self._connect() as conn:
+            self._sync_broadcast_jobs_to_config_sync(conn)
+        self._last_broadcast_settings_signature = self._broadcast_settings_signature()
+
+    def _sync_broadcast_jobs_from_config_sync(self, force: bool = False) -> None:
+        signature = self._broadcast_settings_signature()
+        if not force and signature == self._last_broadcast_settings_signature:
+            return
+
+        parsed_by_kind: dict[str, dict[str, Any]] = {}
+        for item in self._broadcast_settings_config():
+            parsed_item = self._parse_broadcast_settings_item(item)
+            if parsed_item is None:
+                continue
+            kind, parsed, _normalized_item = parsed_item
+            parsed_by_kind[kind] = parsed
+
+        now = self._now()
+        with self._connect() as conn:
+            existing = {str(row.get("kind") or ""): row for row in self._list_broadcast_jobs(conn)}
+            for kind in ("update", "preview"):
+                parsed = parsed_by_kind.get(kind)
+                if parsed is None:
+                    if existing.get(kind) is not None:
+                        self._delete_broadcast_job(conn, kind)
+                    continue
+
+                if not any(
+                    str(parsed.get(field) or "").strip()
+                    for field in ("session_id", "time_hhmm", "content")
+                ):
+                    if existing.get(kind) is not None:
+                        self._delete_broadcast_job(conn, kind)
+                    continue
+
+                existing_row = existing.get(kind) or {}
+                self._upsert_broadcast_job(
+                    conn,
+                    kind=kind,
+                    enabled=bool(parsed["enabled"]),
+                    session_id=str(parsed["session_id"]),
+                    session_label=str(parsed["session_label"]),
+                    time_hhmm=str(parsed["time_hhmm"]),
+                    content=str(parsed["content"]),
+                    updated_by_user_id=str(existing_row.get("updated_by_user_id") or "config"),
+                    updated_by_user_name=str(existing_row.get("updated_by_user_name") or "设置页"),
+                    now=now,
+                )
+
+            self._sync_broadcast_jobs_to_config_sync(conn)
+
+    async def _sync_broadcast_jobs_from_config(self, force: bool = False) -> None:
+        async with self._db_lock:
+            self._sync_broadcast_jobs_from_config_sync(force=force)
 
     # ---- 数据访问 ----
     def _find_active_task_by_target(
@@ -2204,6 +2369,7 @@ class WorkSupervisorPlugin(Star):
                     updated_by_user_name=self._extract_sender_name(event),
                     now=now,
                 )
+                self._sync_broadcast_jobs_to_config_sync(conn)
 
     async def _toggle_broadcast_job(self, kind: str, enabled: bool) -> bool:
         now_iso = self._iso(self._now())
@@ -2217,6 +2383,7 @@ class WorkSupervisorPlugin(Star):
                     (1 if enabled else 0, now_iso, kind),
                 )
                 conn.commit()
+                self._sync_broadcast_jobs_to_config_sync(conn)
         return True
 
     async def _get_broadcast_status_text(self, kind: str) -> str:

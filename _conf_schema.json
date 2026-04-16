@@ -181,6 +181,86 @@
       }
     }
   },
+  "broadcast_settings": {
+    "description": "设置页内容播报",
+    "type": "template_list",
+    "hint": "这里可以直接配置“更新内容”和“内容预告”播报。命令设置的播报也会同步显示到这里；从这里删掉后，对应播报会一起取消。",
+    "default": [],
+    "templates": {
+      "update_broadcast": {
+        "name": "更新内容播报",
+        "hint": "每天固定时间，把更新内容发到指定会话。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "hint": "关闭后会保留设置，但不会实际发送。",
+            "default": true
+          },
+          "session_id": {
+            "description": "发送到哪个会话",
+            "type": "string",
+            "hint": "例如 napcat:FriendMessage:123456 或 napcat:GroupMessage:654321。命令设置过一次后，这里会自动带出来。",
+            "default": ""
+          },
+          "session_label": {
+            "description": "会话备注",
+            "type": "string",
+            "hint": "只是方便你自己看，不影响发送。",
+            "default": ""
+          },
+          "time_hhmm": {
+            "description": "每天几点发",
+            "type": "string",
+            "hint": "按 24 小时制填写，例如 21:00。",
+            "default": ""
+          },
+          "content": {
+            "description": "更新内容文案",
+            "type": "text",
+            "hint": "到点后会把这段内容发出去。",
+            "default": ""
+          }
+        }
+      },
+      "preview_broadcast": {
+        "name": "内容预告播报",
+        "hint": "每天固定时间，把内容预告发到指定会话。",
+        "items": {
+          "enabled": {
+            "description": "启用",
+            "type": "bool",
+            "hint": "关闭后会保留设置，但不会实际发送。",
+            "default": true
+          },
+          "session_id": {
+            "description": "发送到哪个会话",
+            "type": "string",
+            "hint": "例如 napcat:FriendMessage:123456 或 napcat:GroupMessage:654321。命令设置过一次后，这里会自动带出来。",
+            "default": ""
+          },
+          "session_label": {
+            "description": "会话备注",
+            "type": "string",
+            "hint": "只是方便你自己看，不影响发送。",
+            "default": ""
+          },
+          "time_hhmm": {
+            "description": "每天几点发",
+            "type": "string",
+            "hint": "按 24 小时制填写，例如 20:00。",
+            "default": ""
+          },
+          "content": {
+            "description": "内容预告文案",
+            "type": "text",
+            "hint": "到点后会把这段内容发出去。",
+            "default": ""
+          }
+        }
+      }
+    }
+  },
   "fallback_reminder_templates": {
     "description": "本地回退提醒模板",
     "type": "text",
