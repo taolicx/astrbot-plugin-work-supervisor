@@ -319,6 +319,27 @@ async def run_smoke_test() -> list[str]:
         assert direct_at_bot_start_event.stopped is True
         passed.append("direct_at_bot_start_command")
 
+        raw_message_fallback_event = FakeEvent(
+            sender_id="u133",
+            sender_name="RawOnlyUser",
+            unified_msg_origin="aiocqhttp:GroupMessage:g133",
+            message_str="监督 开始 @RawOnlyUser(133) 任务=做海报 待办=出图、排版 时长=2h 冷却=1h",
+            messages=[
+                At(name="RawOnlyUser", qq="u133"),
+                Plain("监督"),
+            ],
+            group_id="g133",
+            private=False,
+            admin=True,
+        )
+        await plugin.on_message(raw_message_fallback_event)
+        assert len(raw_message_fallback_event.sent_messages) == 1
+        assert "已开始监督" in plain_text_of(raw_message_fallback_event.sent_messages[0])
+        assert "做海报" in plain_text_of(raw_message_fallback_event.sent_messages[0])
+        assert raw_message_fallback_event.call_llm is False
+        assert raw_message_fallback_event.stopped is True
+        passed.append("raw_message_command_fallback")
+
         self_event = FakeEvent(
             sender_id="u100",
             sender_name="Alice",

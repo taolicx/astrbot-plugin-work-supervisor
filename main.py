@@ -48,7 +48,7 @@ DEFAULT_NORMAL_CHAT_YIELD_PREFIXES = ("/", "／")
     "WorkSupervisor",
     "Codex",
     "带冷却监督、群聊@目标、每日更新/预告播报、支持大模型人格催促的 AstrBot 插件",
-    "0.1.10",
+    "0.1.11",
     "https://github.com/AstrBotDevs/AstrBot",
 )
 class WorkSupervisorPlugin(Star):
@@ -584,6 +584,17 @@ class WorkSupervisorPlugin(Star):
     def _normalize_command_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", str(text or "").strip())
 
+    def _command_text_candidates(self, event: AstrMessageEvent) -> list[str]:
+        candidates: list[str] = []
+        for raw_text in (
+            str(event.get_message_str() or "").strip(),
+            self._extract_plain_text(event),
+        ):
+            normalized = self._normalize_command_text(raw_text)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
     def _strip_command_prefix(
         self,
         text: str,
@@ -616,10 +627,10 @@ class WorkSupervisorPlugin(Star):
         # parameter, so command handlers only receive the first token. Rebuild the
         # payload from raw message text first and fall back to parsed params only
         # when the command prefix cannot be matched from the original event text.
-        full_text = self._extract_plain_text(event)
-        stripped_text, matched = self._strip_command_prefix(full_text, *command_names)
-        if matched:
-            return stripped_text
+        for full_text in self._command_text_candidates(event):
+            stripped_text, matched = self._strip_command_prefix(full_text, *command_names)
+            if matched:
+                return stripped_text
         return str(payload or "").strip()
 
     def _supervision_help_text(self) -> str:
@@ -673,73 +684,70 @@ class WorkSupervisorPlugin(Star):
         # Keep an explicit command fallback in the message hook so plugin commands
         # still work when AstrBot wake-prefix parsing leaves handlers with empty or
         # truncated payloads.
-        normalized_text = self._normalize_command_text(self._extract_plain_text(event))
-        if not normalized_text:
-            return False
+        for normalized_text in self._command_text_candidates(event):
+            supervision_tail = self._strip_explicit_command_root(normalized_text, "监督", "督工")
+            if supervision_tail is not None:
+                if not supervision_tail:
+                    return await self._emit_direct_command_result(event, self.help_supervision)
+                subcommand, _, remainder = supervision_tail.partition(" ")
+                if subcommand in {"开始", "创建", "新增"}:
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.start_supervision,
+                        remainder.strip(),
+                    )
+                if subcommand in {"状态", "查看", "查询"}:
+                    return await self._emit_direct_command_result(event, self.status_supervision)
+                if subcommand in {"完成", "结束", "done"}:
+                    return await self._emit_direct_command_result(event, self.complete_supervision)
+                if subcommand in {"取消", "abort"}:
+                    return await self._emit_direct_command_result(event, self.cancel_supervision)
+                if subcommand in {"帮助", "help"}:
+                    return await self._emit_direct_command_result(event, self.help_supervision)
+                event.set_result(MessageEventResult().message(self._supervision_help_text()).stop_event())
+                return True
 
-        supervision_tail = self._strip_explicit_command_root(normalized_text, "监督", "督工")
-        if supervision_tail is not None:
-            if not supervision_tail:
-                return await self._emit_direct_command_result(event, self.help_supervision)
-            subcommand, _, remainder = supervision_tail.partition(" ")
-            if subcommand in {"开始", "创建", "新增"}:
-                return await self._emit_direct_command_result(
-                    event,
-                    self.start_supervision,
-                    remainder.strip(),
-                )
-            if subcommand in {"状态", "查看", "查询"}:
-                return await self._emit_direct_command_result(event, self.status_supervision)
-            if subcommand in {"完成", "结束", "done"}:
-                return await self._emit_direct_command_result(event, self.complete_supervision)
-            if subcommand in {"取消", "abort"}:
-                return await self._emit_direct_command_result(event, self.cancel_supervision)
-            if subcommand in {"帮助", "help"}:
-                return await self._emit_direct_command_result(event, self.help_supervision)
-            event.set_result(MessageEventResult().message(self._supervision_help_text()).stop_event())
-            return True
-
-        update_tail = self._strip_explicit_command_root(normalized_text, "更新内容")
-        if update_tail is not None:
-            if not update_tail:
+            update_tail = self._strip_explicit_command_root(normalized_text, "更新内容")
+            if update_tail is not None:
+                if not update_tail:
+                    return await self._emit_direct_command_result(event, self.update_status)
+                subcommand, _, remainder = update_tail.partition(" ")
+                if subcommand in {"设置", "设定"}:
+                    return await self._emit_direct_command_result(event, self.update_set, remainder.strip())
+                if subcommand == "开":
+                    return await self._emit_direct_command_result(event, self.update_on)
+                if subcommand == "关":
+                    return await self._emit_direct_command_result(event, self.update_off)
+                if subcommand == "状态":
+                    return await self._emit_direct_command_result(event, self.update_status)
+                if subcommand in {"立即发送", "发送"}:
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.update_send_now,
+                        remainder.strip(),
+                    )
                 return await self._emit_direct_command_result(event, self.update_status)
-            subcommand, _, remainder = update_tail.partition(" ")
-            if subcommand in {"设置", "设定"}:
-                return await self._emit_direct_command_result(event, self.update_set, remainder.strip())
-            if subcommand == "开":
-                return await self._emit_direct_command_result(event, self.update_on)
-            if subcommand == "关":
-                return await self._emit_direct_command_result(event, self.update_off)
-            if subcommand == "状态":
-                return await self._emit_direct_command_result(event, self.update_status)
-            if subcommand in {"立即发送", "发送"}:
-                return await self._emit_direct_command_result(
-                    event,
-                    self.update_send_now,
-                    remainder.strip(),
-                )
-            return await self._emit_direct_command_result(event, self.update_status)
 
-        preview_tail = self._strip_explicit_command_root(normalized_text, "内容预告")
-        if preview_tail is not None:
-            if not preview_tail:
+            preview_tail = self._strip_explicit_command_root(normalized_text, "内容预告")
+            if preview_tail is not None:
+                if not preview_tail:
+                    return await self._emit_direct_command_result(event, self.preview_status)
+                subcommand, _, remainder = preview_tail.partition(" ")
+                if subcommand in {"设置", "设定"}:
+                    return await self._emit_direct_command_result(event, self.preview_set, remainder.strip())
+                if subcommand == "开":
+                    return await self._emit_direct_command_result(event, self.preview_on)
+                if subcommand == "关":
+                    return await self._emit_direct_command_result(event, self.preview_off)
+                if subcommand == "状态":
+                    return await self._emit_direct_command_result(event, self.preview_status)
+                if subcommand in {"立即发送", "发送"}:
+                    return await self._emit_direct_command_result(
+                        event,
+                        self.preview_send_now,
+                        remainder.strip(),
+                    )
                 return await self._emit_direct_command_result(event, self.preview_status)
-            subcommand, _, remainder = preview_tail.partition(" ")
-            if subcommand in {"设置", "设定"}:
-                return await self._emit_direct_command_result(event, self.preview_set, remainder.strip())
-            if subcommand == "开":
-                return await self._emit_direct_command_result(event, self.preview_on)
-            if subcommand == "关":
-                return await self._emit_direct_command_result(event, self.preview_off)
-            if subcommand == "状态":
-                return await self._emit_direct_command_result(event, self.preview_status)
-            if subcommand in {"立即发送", "发送"}:
-                return await self._emit_direct_command_result(
-                    event,
-                    self.preview_send_now,
-                    remainder.strip(),
-                )
-            return await self._emit_direct_command_result(event, self.preview_status)
 
         return False
 
@@ -927,8 +935,15 @@ class WorkSupervisorPlugin(Star):
         text = str(payload or "").strip()
         if not text:
             return ""
-        if text.startswith("@"):
-            return re.sub(r"^@\S+\s*", "", text, count=1).strip()
+        mention_pattern = re.compile(
+            r"^(?:\[At:[^\]]+\]|@\S+(?:\(\d+\))?)\s*",
+            re.I,
+        )
+        while text:
+            cleaned = mention_pattern.sub("", text, count=1).strip()
+            if cleaned == text:
+                break
+            text = cleaned
         return text
 
     def _parse_duration_seconds(self, text: str, default_seconds: int) -> int:
